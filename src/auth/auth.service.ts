@@ -1,4 +1,8 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import { UsersService } from '../users/users.service';
 import { CreateUserData } from '../users/types/CreateUserData';
@@ -6,6 +10,7 @@ import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { User } from '../users/entities/user.entity';
+import { LoginUserDto } from '../users/dto/login-user.dto';
 
 @Injectable()
 export class AuthService {
@@ -29,6 +34,23 @@ export class AuthService {
     const createdUser =  await this.usersService.createUser(userToCreate);
 
     return this.generateTokens(createdUser);
+  }
+
+  async login(inputData: LoginUserDto){
+    const user = await this.usersService.findByLogin(inputData.login);
+    if (!user) {
+      //Mock hash UwU
+      const isPasswordValidMock = await bcrypt.compare(
+        inputData.password,
+        '$2b$10$8ckc557lO.yx3SZjH8IMoOoZ61mS8D7EjqKRoAoxdg17A.P6NKb4G',
+      );
+      throw new UnauthorizedException('Invalid login or password');
+    }
+    const isPasswordValid = await bcrypt.compare(inputData.password, user.passwordHash);
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid login or password');
+    }
+    return this.generateTokens(user);
   }
 
   async generateTokens(user: User) {
