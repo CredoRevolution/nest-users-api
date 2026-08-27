@@ -1,0 +1,199 @@
+###############################################################################
+# PROFILE — защищённый роут GET /profile/my.
+# Здесь проверяется работа JwtAuthGuard: кого пускать, кого нет.
+#
+# Перед запуском этого файла хотя бы раз выполни вход из 01-auth.http,
+# иначе переменная access_token будет пустой.
+###############################################################################
+
+### Профиль с валидным токеном — ожидаем 200
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("профиль отдался", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    });
+    client.test("passwordHash отсутствует", function () {
+        client.assert(response.body.passwordHash === undefined,
+            "ХЭШ ПАРОЛЯ УЕХАЛ КЛИЕНТУ — сломана сериализация");
+    });
+    client.test("все поля профиля на месте", function () {
+        client.assert(response.body.id !== undefined, "нет id");
+        client.assert(response.body.login !== undefined, "нет login");
+        client.assert(response.body.email !== undefined, "нет email");
+        client.assert(response.body.age !== undefined, "нет age");
+    });
+    client.global.set("my_id", response.body.id);
+%}
+
+
+### Профиль второго пользователя по его токену — должен прийти ДРУГОЙ профиль
+# Доказательство того, что id берётся из токена, а не откуда-то ещё.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("пришёл другой пользователь", function () {
+        client.assert(response.body.id !== client.global.get("my_id"),
+            "оба токена вернули один и тот же профиль");
+    });
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# НЕГАТИВНЫЕ СЛУЧАИ — всё это должно давать 401
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Совсем без заголовка Authorization — ожидаем 401
+GET {{baseUrl}}/profile/my
+
+> {%
+    client.test("без токена = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Пустой заголовок Authorization — ожидаем 401
+GET {{baseUrl}}/profile/my
+Authorization:
+
+
+### Токен без слова Bearer — ожидаем 401
+# Проверяет ту самую строку extractTokenFromHeader, где сверяется type === 'Bearer'.
+GET {{baseUrl}}/profile/my
+Authorization: {{access_token}}
+
+> {%
+    client.test("без схемы Bearer = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Другая схема авторизации вместо Bearer — ожидаем 401
+GET {{baseUrl}}/profile/my
+Authorization: Basic {{access_token}}
+
+
+### Схема написана строчными буквами — ожидаем 401
+# Сравнение в коде регистрозависимое. Так и должно быть или нет — решай сам,
+# но знай, как оно себя ведёт.
+GET {{baseUrl}}/profile/my
+Authorization: bearer {{access_token}}
+
+
+### Мусор вместо токена — ожидаем 401
+GET {{baseUrl}}/profile/my
+Authorization: Bearer это-не-токен
+
+> {%
+    client.test("мусор вместо токена = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Токен с испорченной подписью — ожидаем 401
+# Тело токена читается кем угодно, но подделать его нельзя: подпись не сойдётся.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsImxvZ2luIjoic2FzaGEiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTgwMDAwMDAwMH0.podpis-vydumana-i-ne-soydyotsya
+
+
+### REFRESH-токен вместо access — ожидаем 401
+# Разные секреты как раз для этого: refresh не должен открывать защищённые роуты.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{refresh_token}}
+
+> {%
+    client.test("refresh не работает как access = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Просроченный access-токен — ожидаем 401
+# Как проверить: поставь в .env JWT_ACCESS_EXPIRES=10s, перезапусти приложение,
+# залогинься, подожди 15 секунд и выполни этот запрос. Потом верни 15m обратно.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ОБНОВЛЕНИЕ ПРОФИЛЯ И МЯГКОЕ УДАЛЕНИЕ — ШАГ 18, ЕЩЁ НЕ РЕАЛИЗОВАНО
+# Пути и метод уточни, когда будешь делать. Пока это заготовки.
+# ─────────────────────────────────────────────────────────────────────────────
+
+### [не реализовано] Обновление своего профиля
+PATCH {{baseUrl}}/profile/my
+Content-Type: application/json
+Authorization: Bearer {{access_token}}
+
+{
+  "about": "обновлённое описание"
+}
+
+
+### [не реализовано] Обновление возраста
+PATCH {{baseUrl}}/profile/my
+Content-Type: application/json
+Authorization: Bearer {{access_token}}
+
+{
+  "age": 29
+}
+
+
+### [не реализовано] Попытка обновить поле, которое менять нельзя — ожидаем 400
+PATCH {{baseUrl}}/profile/my
+Content-Type: application/json
+Authorization: Bearer {{access_token}}
+
+{
+  "passwordHash": "подмена",
+  "id": 999
+}
+
+
+### [не реализовано] Обновление без токена — ожидаем 401
+PATCH {{baseUrl}}/profile/my
+Content-Type: application/json
+
+{
+  "about": "без токена"
+}
+
+
+### [не реализовано] Мягкое удаление своего аккаунта
+DELETE {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+
+### [не реализовано] Профиль после удаления — ожидаем 401 или 404, но НЕ 200 с пустотой
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+
+### [не реализовано] Вход удалённым пользователем — ожидаем 401
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{userLogin}}",
+  "password": "{{userPassword}}"
+}
+
+
+### [не реализовано] Повторная регистрация с логином удалённого пользователя
+# Интересный вопрос: логин занят навсегда или освобождается? Уникальный индекс
+# в базе останется, строка-то никуда не делась. Проверь и будь готов ответить.
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{userLogin}}",
+  "email": "{{userEmail}}",
+  "password": "{{userPassword}}",
+  "age": 28
+}
