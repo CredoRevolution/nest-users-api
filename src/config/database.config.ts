@@ -1,6 +1,7 @@
 import type { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { User } from '../users/entities/user.entity';
+import { RefreshToken } from '../auth/entities/refresh-token.entity';
 
 export const databaseConfig = (
   config: ConfigService,
@@ -11,7 +12,7 @@ export const databaseConfig = (
   username: config.getOrThrow('DB_USER'),
   password: config.getOrThrow('DB_PASSWORD'),
   database: config.getOrThrow('DB_NAME'),
-  entities: [User],
+  entities: [User, RefreshToken],
   synchronize: true,
   logging: true,
 });
