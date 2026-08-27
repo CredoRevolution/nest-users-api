@@ -10,11 +10,15 @@ export class UsersService {
     return this.usersRepository.findAll();
   }
 
-  async findByEmail(email: string) :  Promise<User | null>{
+  async findByEmail(email: string): Promise<User | null> {
     return await this.usersRepository.findByEmail(email);
   }
 
-  async findByLogin(login: string) :  Promise<User | null>{
+  async findById(id: number): Promise<User | null> {
+    return await this.usersRepository.findById(id);
+  }
+
+  async findByLogin(login: string): Promise<User | null> {
     return await this.usersRepository.findByLogin(login);
   }
 

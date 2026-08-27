@@ -13,20 +13,26 @@ export class UsersRepository {
   findAll(): Promise<User[]> {
     return this.userRepository.find();
   }
-  findByEmail(email : string): Promise<User | null>{
+  findByEmail(email: string): Promise<User | null> {
     return this.userRepository.findOneBy({
-      email
-    })
+      email,
+    });
   }
-  
-  findByLogin(login : string): Promise<User | null>{
+
+  findById(id: number): Promise<User | null> {
     return this.userRepository.findOneBy({
-      login
-    })
+      id,
+    });
+  }
+
+  findByLogin(login: string): Promise<User | null> {
+    return this.userRepository.findOneBy({
+      login,
+    });
   }
 
   async createUser(user: CreateUserData) {
-    const result =  this.userRepository.create(user)
+    const result = this.userRepository.create(user);
     return this.userRepository.save(result);
   }
 }
