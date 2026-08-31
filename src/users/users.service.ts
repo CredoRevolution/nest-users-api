@@ -43,6 +43,14 @@ export class UsersService {
     return await this.usersRepository.findByLogin(login);
   }
 
+  async existsByEmail(email: string): Promise<boolean> {
+    return await this.usersRepository.existsByEmail(email);
+  }
+
+  async existsByLogin(login: string): Promise<boolean> {
+    return await this.usersRepository.existsByLogin(login);
+  }
+
   async createUser(user: CreateUserData) {
     return await this.usersRepository.createUser(user);
   }

@@ -43,6 +43,14 @@ export class UsersRepository {
     });
   }
 
+  existsByEmail(email: string): Promise<boolean> {
+    return this.userRepository.exists({ where: { email }, withDeleted: true });
+  }
+
+  existsByLogin(login: string): Promise<boolean> {
+    return this.userRepository.exists({ where: { login }, withDeleted: true });
+  }
+
   async createUser(user: CreateUserData) {
     const result = this.userRepository.create(user);
     return this.userRepository.save(result);
