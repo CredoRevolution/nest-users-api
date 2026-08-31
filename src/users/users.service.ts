@@ -1,8 +1,14 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { User } from './entities/user.entity';
 import { UsersRepository } from './users.repository';
 import { CreateUserData } from './types/CreateUserData';
 import { FindUsersDto } from './dto/find-users.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { PaginatedUsersDto } from './dto/paginated-users.dto';
 
 @Injectable()
@@ -53,5 +59,33 @@ export class UsersService {
 
   async createUser(user: CreateUserData) {
     return await this.usersRepository.createUser(user);
+  }
+
+  async updateUser(id: number, dto: UpdateUserDto): Promise<User> {
+    const user = await this.findByIdOrFail(id);
+
+    if (dto.email && dto.email !== user.email) {
+      if (await this.existsByEmail(dto.email)) {
+        throw new ConflictException('User with this email already exists');
+      }
+    }
+    if (dto.login && dto.login !== user.login) {
+      if (await this.existsByLogin(dto.login)) {
+        throw new ConflictException('User with this login already exists');
+      }
+    }
+
+    const { password, ...fields } = dto;
+    const data: Partial<User> = { ...fields };
+    if (password) {
+      data.passwordHash = await bcrypt.hash(password, 10);
+    }
+
+    return this.usersRepository.updateUser(user, data);
+  }
+
+  async softDeleteUser(id: number): Promise<void> {
+    await this.findByIdOrFail(id);
+    await this.usersRepository.softDeleteUser(id);
   }
 }

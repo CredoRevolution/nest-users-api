@@ -56,6 +56,14 @@ export class UsersRepository {
     return this.userRepository.save(result);
   }
 
+  updateUser(user: User, data: Partial<User>): Promise<User> {
+    return this.userRepository.save(this.userRepository.merge(user, data));
+  }
+
+  async softDeleteUser(id: number): Promise<void> {
+    await this.userRepository.softDelete({ id });
+  }
+
   private escapeLike(value: string): string {
     return value.replace(/[\\%_]/g, (char) => '\\' + char);
   }
