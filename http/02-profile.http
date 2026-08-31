@@ -121,11 +121,11 @@ Authorization: Bearer {{access_token}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ОБНОВЛЕНИЕ ПРОФИЛЯ И МЯГКОЕ УДАЛЕНИЕ — ШАГ 18, ЕЩЁ НЕ РЕАЛИЗОВАНО
-# Пути и метод уточни, когда будешь делать. Пока это заготовки.
+# ОБНОВЛЕНИЕ ПРОФИЛЯ И МЯГКОЕ УДАЛЕНИЕ
+# PATCH /profile/my и DELETE /profile/my.
 # ─────────────────────────────────────────────────────────────────────────────
 
-### [не реализовано] Обновление своего профиля
+### Обновление своего профиля
 PATCH {{baseUrl}}/profile/my
 Content-Type: application/json
 Authorization: Bearer {{access_token}}
@@ -135,7 +135,7 @@ Authorization: Bearer {{access_token}}
 }
 
 
-### [не реализовано] Обновление возраста
+### Обновление возраста
 PATCH {{baseUrl}}/profile/my
 Content-Type: application/json
 Authorization: Bearer {{access_token}}
@@ -145,7 +145,7 @@ Authorization: Bearer {{access_token}}
 }
 
 
-### [не реализовано] Попытка обновить поле, которое менять нельзя — ожидаем 400
+### Попытка обновить поле, которое менять нельзя — ожидаем 400
 PATCH {{baseUrl}}/profile/my
 Content-Type: application/json
 Authorization: Bearer {{access_token}}
@@ -156,7 +156,7 @@ Authorization: Bearer {{access_token}}
 }
 
 
-### [не реализовано] Обновление без токена — ожидаем 401
+### Обновление без токена — ожидаем 401
 PATCH {{baseUrl}}/profile/my
 Content-Type: application/json
 
@@ -165,17 +165,17 @@ Content-Type: application/json
 }
 
 
-### [не реализовано] Мягкое удаление своего аккаунта
+### Мягкое удаление своего аккаунта — ожидаем 204
 DELETE {{baseUrl}}/profile/my
 Authorization: Bearer {{access_token}}
 
 
-### [не реализовано] Профиль после удаления — ожидаем 401 или 404, но НЕ 200 с пустотой
+### Профиль после удаления — ожидаем 404: токен живой, а пользователя уже нет
 GET {{baseUrl}}/profile/my
 Authorization: Bearer {{access_token}}
 
 
-### [не реализовано] Вход удалённым пользователем — ожидаем 401
+### Вход удалённым пользователем — ожидаем 401
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
@@ -185,7 +185,7 @@ Content-Type: application/json
 }
 
 
-### [не реализовано] Повторная регистрация с логином удалённого пользователя
+### Повторная регистрация с логином удалённого пользователя
 # Интересный вопрос: логин занят навсегда или освобождается? Уникальный индекс
 # в базе останется, строка-то никуда не делась. Проверь и будь готов ответить.
 POST {{baseUrl}}/auth/register
