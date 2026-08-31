@@ -15,6 +15,7 @@ import { RefreshTokensRepository } from './refresh-tokens.repository';
     UsersModule,
     TypeOrmModule.forFeature([RefreshToken]),
     JwtModule.registerAsync({
+      global: true,
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         secret: config.getOrThrow('JWT_ACCESS_SECRET'),
@@ -22,6 +23,6 @@ import { RefreshTokensRepository } from './refresh-tokens.repository';
       }),
     }),
   ],
-  exports: [AuthService, JwtModule],
+  exports: [AuthService],
 })
 export class AuthModule {}
