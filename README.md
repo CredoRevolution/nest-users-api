@@ -9,10 +9,33 @@
 docker compose up -d
 cp .env.example .env
 npm install
+npm run migration:run
 npm run start:dev
 ```
 
 API — http://localhost:3000, Swagger — http://localhost:3000/docs
+
+## Миграции
+
+Схемой управляют миграции, `synchronize` выключен — на пустой базе без
+`npm run migration:run` таблиц не будет.
+
+```bash
+npm run migration:run                          # накатить
+npm run migration:revert                       # откатить последнюю
+npm run migration:show                         # что применено
+npm run migration:generate src/migrations/Name # сгенерировать по сущностям
+```
+
+`migration:generate` сравнивает сущности с текущей базой, поэтому запускать его
+нужно на базе, где уже накатаны все предыдущие миграции.
+
+## Линтер
+
+```bash
+npm run lint      # проверить
+npm run lint:fix  # починить автоматически
+```
 
 ## Роуты
 
