@@ -1,0 +1,385 @@
+###############################################################################
+# AUTH — регистрация, вход, обновление токенов.
+# Всё, что может пойти не так, тоже здесь: невалидные поля, дубликаты,
+# неверный пароль, чужой секрет, битый токен.
+###############################################################################
+
+# ─────────────────────────────────────────────────────────────────────────────
+# РЕГИСТРАЦИЯ
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Регистрация: основной пользователь (данные из окружения)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{userLogin}}",
+  "email": "{{userEmail}}",
+  "password": "{{userPassword}}",
+  "age": {{userAge}},
+  "about": "основной тестовый пользователь"
+}
+
+> {%
+    client.global.set("access_token", response.body.access_token);
+    client.global.set("refresh_token", response.body.refresh_token);
+%}
+
+
+### Регистрация: второй пользователь (нужен для списка и проверки чужих профилей)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{secondLogin}}",
+  "email": "{{secondEmail}}",
+  "password": "{{secondPassword}}",
+  "age": {{secondAge}},
+  "about": "второй пользователь"
+}
+
+> {%
+    client.global.set("second_access_token", response.body.access_token);
+    client.global.set("second_refresh_token", response.body.refresh_token);
+%}
+
+
+### Регистрация без поля about (оно опциональное) — ожидаем 201
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "no_about_{{$timestamp}}",
+  "email": "no_about_{{$timestamp}}@example.com",
+  "password": "qwerty123",
+  "age": 33
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# РЕГИСТРАЦИЯ — НЕГАТИВНЫЕ СЛУЧАИ
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Дубликат логина — ожидаем 409 Conflict
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{userLogin}}",
+  "email": "other_{{$timestamp}}@example.com",
+  "password": "qwerty123",
+  "age": 28
+}
+
+> {%
+    client.test("дубликат логина = 409", function () {
+        client.assert(response.status === 409, "ожидали 409, пришло " + response.status);
+    });
+%}
+
+
+### Дубликат email — ожидаем 409 Conflict
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "other_{{$timestamp}}",
+  "email": "{{userEmail}}",
+  "password": "qwerty123",
+  "age": 28
+}
+
+> {%
+    client.test("дубликат email = 409", function () {
+        client.assert(response.status === 409, "ожидали 409, пришло " + response.status);
+    });
+%}
+
+
+### Кривой email — ожидаем 400 со списком ошибок валидации
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "bad_email_{{$timestamp}}",
+  "email": "это-вообще-не-почта",
+  "password": "qwerty123",
+  "age": 28
+}
+
+> {%
+    client.test("кривой email = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Пустое тело — ожидаем 400 со всеми обязательными полями в ошибке
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{}
+
+
+### Лишние поля, которых нет в DTO — ожидаем 400
+# Так работает forbidNonWhitelisted: true из main.ts.
+# Если бы стоял только whitelist: true — было бы 201, а поля молча выкинуло.
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "extra_{{$timestamp}}",
+  "email": "extra_{{$timestamp}}@example.com",
+  "password": "qwerty123",
+  "age": 28,
+  "isAdmin": true,
+  "passwordHash": "попытка подсунуть свой хэш"
+}
+
+> {%
+    client.test("лишние поля отбиты = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### about длиннее 1000 символов — ожидаем 400
+# Строку ниже размножь копипастой, пока не станет длиннее тысячи символов.
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "long_{{$timestamp}}",
+  "email": "long_{{$timestamp}}@example.com",
+  "password": "qwerty123",
+  "age": 28,
+  "about": "текст, который надо размножить копипастой до длины больше тысячи символов "
+}
+
+
+### Возраст строкой вместо числа — посмотри, приведёт ли его transform: true
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "strage_{{$timestamp}}",
+  "email": "strage_{{$timestamp}}@example.com",
+  "password": "qwerty123",
+  "age": "28"
+}
+
+
+### Отрицательный возраст — а есть ли вообще проверка?
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "negative_{{$timestamp}}",
+  "email": "negative_{{$timestamp}}@example.com",
+  "password": "qwerty123",
+  "age": -5
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ВХОД
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Вход основным пользователем — ожидаем 200 и новую пару токенов
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{userLogin}}",
+  "password": "{{userPassword}}"
+}
+
+> {%
+    client.test("вход = 200", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    });
+    client.global.set("access_token", response.body.access_token);
+    client.global.set("refresh_token", response.body.refresh_token);
+%}
+
+
+### Вход вторым пользователем
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{secondLogin}}",
+  "password": "{{secondPassword}}"
+}
+
+> {%
+    client.global.set("second_access_token", response.body.access_token);
+    client.global.set("second_refresh_token", response.body.refresh_token);
+%}
+
+
+### Неверный пароль — ожидаем 401
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{userLogin}}",
+  "password": "неправильный-пароль"
+}
+
+> {%
+    client.test("неверный пароль = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Несуществующий логин — ожидаем 401 с ТЕМ ЖЕ текстом, что и выше
+# Сверь два ответа глазами. Если тексты отличаются — по разнице можно
+# перебором узнать, какие логины зарегистрированы (user enumeration).
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "такого-точно-нет-{{$timestamp}}",
+  "password": "qwerty123"
+}
+
+> {%
+    client.test("несуществующий логин = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Вход без пароля — ожидаем 400 (валидация), а не 401
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{userLogin}}"
+}
+
+
+### Вход по email вместо логина — сейчас должно быть 401
+# Проверка того, что findByLogin ищет именно по логину.
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{userEmail}}",
+  "password": "{{userPassword}}"
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ОБНОВЛЕНИЕ ТОКЕНОВ
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Refresh: нормальный сценарий
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{refresh_token}}"
+}
+
+> {%
+    client.test("refresh = 200", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    });
+    client.global.set("old_refresh_token", client.global.get("refresh_token"));
+    client.global.set("access_token", response.body.access_token);
+    client.global.set("refresh_token", response.body.refresh_token);
+%}
+
+
+### Refresh СТАРЫМ токеном сразу после ротации — ожидаем 401
+# Повторное использование refresh считается кражей: сервер заодно отзывает
+# ВСЕ refresh-токены пользователя, включая только что выданный.
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{old_refresh_token}}"
+}
+
+> {%
+    client.test("отозванный refresh = 401", function () {
+        client.assert(response.status === 401,
+            "ожидали 401, пришло " + response.status + " — старый токен всё ещё живой");
+    });
+%}
+
+
+### Новый refresh после попытки кражи тоже мёртв — ожидаем 401
+# Токен получен честно в «нормальном сценарии» выше, но его отозвал предыдущий запрос.
+# Access-токен при этом живёт до истечения, так что 02-profile.http работает дальше.
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{refresh_token}}"
+}
+
+> {%
+    client.test("после кражи отозваны все refresh = 401", function () {
+        client.assert(response.status === 401,
+            "ожидали 401, пришло " + response.status + " — reuse detection не сработал");
+    });
+%}
+
+
+### В refresh подсунут ACCESS-токен — ожидаем 401
+# Секреты у access и refresh разные, поэтому подпись не сойдётся.
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{access_token}}"
+}
+
+> {%
+    client.test("access вместо refresh = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Refresh с выдуманной подписью — ожидаем 401
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsImxvZ2luIjoic2FzaGEiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTgwMDAwMDAwMH0.podpis-vydumana-i-ne-soydyotsya"
+}
+
+
+### Refresh с мусором вместо токена — ожидаем 400 (не проходит @IsJWT), не 401
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "просто-строка"
+}
+
+
+### Refresh без поля вообще — ожидаем 400
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{}
+
+
+### Refresh вторым пользователем — его сессия не должна трогать первую
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{second_refresh_token}}"
+}
+
+> {%
+    client.global.set("second_access_token", response.body.access_token);
+    client.global.set("second_refresh_token", response.body.refresh_token);
+%}

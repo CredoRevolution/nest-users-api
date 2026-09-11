@@ -1,0 +1,130 @@
+###############################################################################
+# SMOKE — счастливый путь целиком, сверху вниз.
+#
+# Запускать кнопкой ">>" в самом верху файла (Run all requests in file),
+# либо по одному зелёными треугольниками слева.
+# Если все зелёные — базовый сценарий домашки живой.
+#
+# Перед запуском: docker compose up -d  и  npm run start:dev
+###############################################################################
+
+### 1. Регистрация нового пользователя (логин уникальный за счёт метки времени)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "smoke_{{$timestamp}}",
+  "email": "smoke_{{$timestamp}}@example.com",
+  "password": "{{userPassword}}",
+  "age": 30,
+  "about": "пользователь для smoke-прогона"
+}
+
+> {%
+    client.test("регистрация вернула 201", function () {
+        client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
+    });
+    client.test("в ответе есть оба токена", function () {
+        client.assert(response.body.access_token, "нет access_token");
+        client.assert(response.body.refresh_token, "нет refresh_token");
+    });
+    client.test("пароль наружу не утёк", function () {
+        client.assert(!JSON.stringify(response.body).includes("password"),
+            "в ответе есть слово password — проверь сериализацию");
+    });
+
+    client.global.set("access_token", response.body.access_token);
+    client.global.set("refresh_token", response.body.refresh_token);
+%}
+
+
+### 2. Профиль по свежему access-токену
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("профиль отдался", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    });
+    client.test("passwordHash отсутствует в ответе", function () {
+        client.assert(response.body.passwordHash === undefined,
+            "ХЭШ ПАРОЛЯ УЕХАЛ КЛИЕНТУ");
+    });
+    client.test("пришли поля профиля", function () {
+        client.assert(response.body.id !== undefined, "нет id");
+        client.assert(response.body.login !== undefined, "нет login");
+        client.assert(response.body.email !== undefined, "нет email");
+    });
+%}
+
+
+### 3. Обновление пары по refresh-токену
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{refresh_token}}"
+}
+
+> {%
+  client.test("refresh вернул 200", function () {
+    client.assert(
+      response.status === 200,
+      "ожидали 200, пришло " + response.status
+    );
+  });
+
+  client.test("пришла новая пара", function () {
+    client.assert(response.body.access_token, "нет access_token");
+    client.assert(response.body.refresh_token, "нет refresh_token");
+  });
+
+  const oldRefreshToken = client.global.get("refresh_token");
+  const newRefreshToken = response.body.refresh_token;
+
+  client.log("OLD REFRESH: " + oldRefreshToken);
+  client.log("NEW REFRESH: " + newRefreshToken);
+  client.log("TOKENS EQUAL: " + (oldRefreshToken === newRefreshToken));
+
+  client.test("refresh-токен действительно новый", function () {
+    client.assert(
+      newRefreshToken !== oldRefreshToken,
+      "вернулся тот же refresh — ротация не работает"
+    );
+  });
+
+  client.global.set("old_refresh_token", oldRefreshToken);
+  client.global.set("access_token", response.body.access_token);
+  client.global.set("refresh_token", newRefreshToken);
+%}
+
+
+### 4. Профиль по обновлённому access-токену
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("новый access работает", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    });
+%}
+
+
+### 5. Повторное использование СТАРОГО refresh — должно быть 401
+# Это и есть доказательство, что ротация работает:
+# старый токен удалён из таблицы refresh_tokens и больше не принимается.
+# Побочный эффект: повторное использование считается кражей, поэтому сервер
+# отзывает и refresh из шага 3. Шаг специально последний.
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{old_refresh_token}}"
+}
+
+> {%
+    client.test("старый refresh отвергнут", function () {
+        client.assert(response.status === 401,
+            "ожидали 401, пришло " + response.status + " — ротация НЕ работает");
+    });
+%}

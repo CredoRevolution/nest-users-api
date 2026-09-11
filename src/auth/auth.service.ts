@@ -1,0 +1,134 @@
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { CreateUserDto } from '../users/dto/create-user.dto';
+import { UsersService } from '../users/users.service';
+import { CreateUserData } from '../users/types/CreateUserData';
+import * as bcrypt from 'bcrypt';
+import { createHash, randomUUID } from 'node:crypto';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { User } from '../users/entities/user.entity';
+import { LoginUserDto } from '../users/dto/login-user.dto';
+import { JwtPayload } from './types/jwt-payload';
+import { RefreshTokensRepository } from './refresh-tokens.repository';
+import { AuthTokensDto } from './dto/auth-tokens.dto';
+
+@Injectable()
+export class AuthService {
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly configService: ConfigService,
+    private readonly jwtService: JwtService,
+    private readonly refreshTokensRepository: RefreshTokensRepository,
+  ) {}
+
+  async register(user: CreateUserDto) {
+    if (await this.usersService.existsByEmail(user.email)) {
+      throw new ConflictException('User with this email already exists');
+    }
+    if (await this.usersService.existsByLogin(user.login)) {
+      throw new ConflictException('User with this login already exists');
+    }
+    const passwordHash: string = await bcrypt.hash(user.password, 10);
+    const userToCreate: CreateUserData = {
+      login: user.login,
+      email: user.email,
+      passwordHash,
+      age: user.age,
+      about: user.about,
+    };
+    const createdUser = await this.usersService.createUser(userToCreate);
+
+    return this.issueTokens(createdUser);
+  }
+
+  async login(inputData: LoginUserDto) {
+    const user = await this.usersService.findByLogin(inputData.login);
+    if (!user) {
+      await bcrypt.compare(
+        inputData.password,
+        '$2b$10$8ckc557lO.yx3SZjH8IMoOoZ61mS8D7EjqKRoAoxdg17A.P6NKb4G',
+      );
+      throw new UnauthorizedException('Invalid login or password');
+    }
+    const isPasswordValid = await bcrypt.compare(
+      inputData.password,
+      user.passwordHash,
+    );
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid login or password');
+    }
+    return this.issueTokens(user);
+  }
+
+  async refresh(refreshToken: string) {
+    let payload: JwtPayload;
+    try {
+      payload = await this.jwtService.verifyAsync<JwtPayload>(refreshToken, {
+        secret: this.configService.getOrThrow('JWT_REFRESH_SECRET'),
+      });
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const tokenWasConsumed = await this.refreshTokensRepository.deleteByHash(
+      this.hashToken(refreshToken),
+    );
+
+    if (!tokenWasConsumed) {
+      await this.revokeAllSessions(payload.sub);
+      throw new UnauthorizedException(
+        'Refresh token has been already used or revoked',
+      );
+    }
+
+    const user = await this.usersService.findById(payload.sub);
+    if (!user) {
+      throw new UnauthorizedException('Invalid refresh token');
+    } else if (user.tokenVersion !== payload.ver) {
+      throw new UnauthorizedException('Session has been revoked');
+    }
+
+    return this.issueTokens(user);
+  }
+
+  async issueTokens(user: User): Promise<AuthTokensDto> {
+    const payload: JwtPayload = {
+      sub: user.id,
+      login: user.login,
+      ver: user.tokenVersion,
+    };
+
+    const accessToken = await this.jwtService.signAsync(payload);
+    const refreshToken = await this.jwtService.signAsync(
+      { ...payload, jti: randomUUID() },
+      {
+        secret: this.configService.getOrThrow('JWT_REFRESH_SECRET'),
+        expiresIn: this.configService.getOrThrow('JWT_REFRESH_EXPIRES'),
+      },
+    );
+
+    const { exp } = this.jwtService.decode<{ exp: number }>(refreshToken);
+    await this.refreshTokensRepository.create({
+      userId: user.id,
+      tokenHash: this.hashToken(refreshToken),
+      expiresAt: new Date(exp * 1000),
+    });
+
+    return {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+    };
+  }
+
+  async revokeAllSessions(userId: number): Promise<void> {
+    await this.refreshTokensRepository.deleteByUserId(userId);
+  }
+
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+}

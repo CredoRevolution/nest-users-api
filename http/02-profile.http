@@ -1,0 +1,323 @@
+###############################################################################
+# PROFILE — /profile/my: чтение, обновление, смена пароля, мягкое удаление.
+# Здесь же проверяется работа JwtAuthGuard: кого пускать, кого нет.
+#
+# Перед запуском этого файла хотя бы раз выполни вход из 01-auth.http,
+# иначе переменная access_token будет пустой.
+###############################################################################
+
+### Профиль с валидным токеном — ожидаем 200
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("профиль отдался", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    });
+    client.test("passwordHash отсутствует", function () {
+        client.assert(response.body.passwordHash === undefined,
+            "ХЭШ ПАРОЛЯ УЕХАЛ КЛИЕНТУ — сломана сериализация");
+    });
+    client.test("все поля профиля на месте", function () {
+        client.assert(response.body.id !== undefined, "нет id");
+        client.assert(response.body.login !== undefined, "нет login");
+        client.assert(response.body.email !== undefined, "нет email");
+        client.assert(response.body.age !== undefined, "нет age");
+    });
+    client.global.set("my_id", response.body.id);
+%}
+
+
+### Профиль второго пользователя по его токену — должен прийти ДРУГОЙ профиль
+# Доказательство того, что id берётся из токена, а не откуда-то ещё.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("пришёл другой пользователь", function () {
+        client.assert(response.body.id !== client.global.get("my_id"),
+            "оба токена вернули один и тот же профиль");
+    });
+    client.global.set("second_id", response.body.id);
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# НЕГАТИВНЫЕ СЛУЧАИ — всё это должно давать 401
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Совсем без заголовка Authorization — ожидаем 401
+GET {{baseUrl}}/profile/my
+
+> {%
+    client.test("без токена = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Пустой заголовок Authorization — ожидаем 401
+GET {{baseUrl}}/profile/my
+Authorization:
+
+
+### Токен без слова Bearer — ожидаем 401
+# Проверяет ту самую строку extractTokenFromHeader, где сверяется type === 'Bearer'.
+GET {{baseUrl}}/profile/my
+Authorization: {{access_token}}
+
+> {%
+    client.test("без схемы Bearer = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Другая схема авторизации вместо Bearer — ожидаем 401
+GET {{baseUrl}}/profile/my
+Authorization: Basic {{access_token}}
+
+
+### Схема написана строчными буквами — ожидаем 401
+# Сравнение в коде регистрозависимое. Так и должно быть или нет — решай сам,
+# но знай, как оно себя ведёт.
+GET {{baseUrl}}/profile/my
+Authorization: bearer {{access_token}}
+
+
+### Мусор вместо токена — ожидаем 401
+GET {{baseUrl}}/profile/my
+Authorization: Bearer это-не-токен
+
+> {%
+    client.test("мусор вместо токена = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Токен с испорченной подписью — ожидаем 401
+# Тело токена читается кем угодно, но подделать его нельзя: подпись не сойдётся.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsImxvZ2luIjoic2FzaGEiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTgwMDAwMDAwMH0.podpis-vydumana-i-ne-soydyotsya
+
+
+### REFRESH-токен вместо access — ожидаем 401
+# Разные секреты как раз для этого: refresh не должен открывать защищённые роуты.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{refresh_token}}
+
+> {%
+    client.test("refresh не работает как access = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Просроченный access-токен — ожидаем 401
+# Как проверить: поставь в .env JWT_ACCESS_EXPIRES=10s, перезапусти приложение,
+# залогинься, подожди 15 секунд и выполни этот запрос. Потом верни 15m обратно.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ОБНОВЛЕНИЕ ПРОФИЛЯ И МЯГКОЕ УДАЛЕНИЕ
+# PATCH /profile/my и DELETE /profile/my.
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Обновление своего профиля
+PATCH {{baseUrl}}/profile/my
+Content-Type: application/json
+Authorization: Bearer {{access_token}}
+
+{
+  "about": "обновлённое описание"
+}
+
+
+### Обновление возраста
+PATCH {{baseUrl}}/profile/my
+Content-Type: application/json
+Authorization: Bearer {{access_token}}
+
+{
+  "age": 29
+}
+
+
+### Попытка обновить поле, которое менять нельзя — ожидаем 400
+PATCH {{baseUrl}}/profile/my
+Content-Type: application/json
+Authorization: Bearer {{access_token}}
+
+{
+  "passwordHash": "подмена",
+  "id": 999
+}
+
+
+### Обновление без токена — ожидаем 401
+PATCH {{baseUrl}}/profile/my
+Content-Type: application/json
+
+{
+  "about": "без токена"
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# СМЕНА ПАРОЛЯ — завершает все сессии, включая текущую.
+# Делается на одноразовом пользователе, чтобы пароль sasha из окружения
+# остался прежним и остальные файлы продолжали работать.
+# Запускай запросы этого блока по порядку.
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Одноразовый пользователь для смены пароля
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "pw_change_{{$timestamp}}",
+  "email": "pw_change_{{$timestamp}}@example.com",
+  "password": "qwerty123",
+  "age": 30
+}
+
+> {%
+    client.global.set("pw_access_token", response.body.access_token);
+    client.global.set("pw_refresh_token", response.body.refresh_token);
+%}
+
+
+### Запоминаем его логин — понадобится для входа с новым паролем
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{pw_access_token}}
+
+> {%
+    client.global.set("pw_login", response.body.login);
+%}
+
+
+### Смена пароля — ожидаем 200 и обновлённый профиль
+PATCH {{baseUrl}}/profile/my
+Content-Type: application/json
+Authorization: Bearer {{pw_access_token}}
+
+{
+  "password": "newpassword123"
+}
+
+> {%
+    client.test("пароль сменён = 200", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    });
+%}
+
+
+### Access-токен, выданный до смены пароля — ожидаем 401
+# Токен ещё не истёк и подпись верная, но версия сессий в нём старая.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{pw_access_token}}
+
+> {%
+    client.test("старый access после смены пароля = 401", function () {
+        client.assert(response.status === 401,
+            "ожидали 401, пришло " + response.status + " — старые сессии не отозваны");
+    });
+%}
+
+
+### Refresh-токен, выданный до смены пароля — ожидаем 401
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{pw_refresh_token}}"
+}
+
+> {%
+    client.test("старый refresh после смены пароля = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Вход со СТАРЫМ паролем — ожидаем 401
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{pw_login}}",
+  "password": "qwerty123"
+}
+
+> {%
+    client.test("старый пароль не подходит = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Вход с НОВЫМ паролем — ожидаем 200, и новый access снова пускает
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{pw_login}}",
+  "password": "newpassword123"
+}
+
+> {%
+    client.test("новый пароль подходит = 200", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    });
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# МЯГКОЕ УДАЛЕНИЕ — выполняй последним: после него токены sasha больше
+# не работают, а 03-users.http ходит под вторым пользователем.
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Мягкое удаление своего аккаунта — ожидаем 204
+DELETE {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+
+### Профиль после удаления — ожидаем 401
+# Токен не истёк и подпись верная, но гвард на каждом запросе проверяет
+# в базе, что пользователь существует, и удалённого не пускает.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.test("удалённого пользователя не пускает = 401", function () {
+        client.assert(response.status === 401,
+            "ожидали 401, пришло " + response.status + " — токен удалённого всё ещё работает");
+    });
+%}
+
+
+### Вход удалённым пользователем — ожидаем 401
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{userLogin}}",
+  "password": "{{userPassword}}"
+}
+
+
+### Повторная регистрация с логином удалённого пользователя
+# Интересный вопрос: логин занят навсегда или освобождается? Уникальный индекс
+# в базе останется, строка-то никуда не делась. Проверь и будь готов ответить.
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{userLogin}}",
+  "email": "{{userEmail}}",
+  "password": "{{userPassword}}",
+  "age": 28
+}
