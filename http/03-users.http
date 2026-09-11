@@ -5,7 +5,9 @@
 # Любой другой query-параметр даст 400: ValidationPipe отбрасывает всё,
 # чего нет в FindUsersDto.
 #
-# Перед запуском выполни вход из 01-auth.http, иначе access_token будет пустым.
+# Запросы идут от второго пользователя (second_access_token): основной
+# удаляется в конце 02-profile.http, и его токен гвард больше не пускает.
+# Перед запуском выполни 01-auth.http, а для запросов по id — ещё и 02-profile.http.
 ###############################################################################
 
 ### Список без токена — ожидаем 401
@@ -21,123 +23,135 @@ GET {{baseUrl}}/users
 
 ### Список с токеном, параметры по умолчанию
 GET {{baseUrl}}/users
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Первая страница, по 10 записей
 GET {{baseUrl}}/users?page=1&limit=10
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Вторая страница
 GET {{baseUrl}}/users?page=2&limit=10
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Страница за пределами данных — ожидаем пустой массив, не ошибку
 GET {{baseUrl}}/users?page=9999&limit=10
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### limit = 1 — самая маленькая страница
 GET {{baseUrl}}/users?page=1&limit=1
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Отрицательная страница — ожидаем 400
 GET {{baseUrl}}/users?page=-1&limit=10
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### page = 0 — ожидаем 400 (страницы нумеруются с единицы)
 GET {{baseUrl}}/users?page=0&limit=10
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### limit = 0 — ожидаем 400
 GET {{baseUrl}}/users?page=1&limit=0
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Огромный limit — должен упереться в потолок, а не отдать всю базу
 # Без верхней границы limit=999999 положит и базу, и приложение.
 # Именно ради этого пагинация и делается.
 GET {{baseUrl}}/users?page=1&limit=999999
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### page буквами вместо числа — ожидаем 400
 GET {{baseUrl}}/users?page=abc&limit=10
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Фильтр по логину целиком
 GET {{baseUrl}}/users?login={{userLogin}}
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Фильтр по куску логина — поиск должен быть частичным
 GET {{baseUrl}}/users?login=sas
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Фильтр в другом регистре — ILIKE, регистр не важен
 GET {{baseUrl}}/users?login=SAS
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Фильтр, под который никто не подходит — ожидаем пустой массив
 GET {{baseUrl}}/users?login=ябсдорфщ
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Фильтр вместе с пагинацией
 GET {{baseUrl}}/users?login=sas&page=1&limit=5
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Спецсимволы в фильтре: символ % в LIKE значит «что угодно»
 # Значение уходит в базу параметром, но шаблон LIKE внутри значения всё равно
 # работает — поэтому % и _ экранируются в escapeLike(). Ожидаем пустой список.
 GET {{baseUrl}}/users?login=%25
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Попытка SQL-инъекции в фильтре — ожидаем пустой результат, а не падение
 # Если сломается — значит значение склеивается в SQL строкой. Это ровно та тема,
 # которую спрашивают на блоке БД.
 GET {{baseUrl}}/users?login=' OR 1=1 --
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Сортировка не реализована: параметра sortBy нет в DTO — ожидаем 400
 # Если делать сортировку, имя колонки нельзя передать в базу параметром,
 # его придётся подставлять в текст запроса — и проверять по белому списку.
 GET {{baseUrl}}/users?sortBy=passwordHash&order=ASC
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Ещё один неизвестный параметр — ожидаем 400
 GET {{baseUrl}}/users?sortBy=такой-колонки-нет
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Мягко удалённый пользователь не должен появляться в списке
 # Выполни после DELETE из 02-profile.http и поищи удалённого по логину.
 GET {{baseUrl}}/users?login={{userLogin}}
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Один пользователь по идентификатору
+GET {{baseUrl}}/users/{{second_id}}
+Authorization: Bearer {{second_access_token}}
+
+
+### Мягко удалённый пользователь по идентификатору — ожидаем 404
+# my_id — это sasha, удалённый в конце 02-profile.http.
 GET {{baseUrl}}/users/{{my_id}}
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("удалённый пользователь не находится = 404", function () {
+        client.assert(response.status === 404, "ожидали 404, пришло " + response.status);
+    });
+%}
 
 
 ### Несуществующий идентификатор — ожидаем 404, а не 200 с пустотой
 GET {{baseUrl}}/users/999999
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}
 
 
 ### Идентификатор буквами — ожидаем 400
 GET {{baseUrl}}/users/abc
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{second_access_token}}

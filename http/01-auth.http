@@ -295,6 +295,8 @@ Content-Type: application/json
 
 
 ### Refresh СТАРЫМ токеном сразу после ротации — ожидаем 401
+# Повторное использование refresh считается кражей: сервер заодно отзывает
+# ВСЕ refresh-токены пользователя, включая только что выданный.
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
@@ -306,6 +308,24 @@ Content-Type: application/json
     client.test("отозванный refresh = 401", function () {
         client.assert(response.status === 401,
             "ожидали 401, пришло " + response.status + " — старый токен всё ещё живой");
+    });
+%}
+
+
+### Новый refresh после попытки кражи тоже мёртв — ожидаем 401
+# Токен получен честно в «нормальном сценарии» выше, но его отозвал предыдущий запрос.
+# Access-токен при этом живёт до истечения, так что 02-profile.http работает дальше.
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{refresh_token}}"
+}
+
+> {%
+    client.test("после кражи отозваны все refresh = 401", function () {
+        client.assert(response.status === 401,
+            "ожидали 401, пришло " + response.status + " — reuse detection не сработал");
     });
 %}
 

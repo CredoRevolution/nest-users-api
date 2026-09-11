@@ -67,22 +67,35 @@ Content-Type: application/json
 }
 
 > {%
-    client.test("refresh вернул 200", function () {
-        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
-    });
-    client.test("пришла новая пара", function () {
-        client.assert(response.body.access_token, "нет access_token");
-        client.assert(response.body.refresh_token, "нет refresh_token");
-    });
-    client.test("refresh-токен действительно новый", function () {
-        client.assert(response.body.refresh_token !== client.global.get("refresh_token"),
-            "вернулся тот же refresh — ротация не работает");
-    });
+  client.test("refresh вернул 200", function () {
+    client.assert(
+      response.status === 200,
+      "ожидали 200, пришло " + response.status
+    );
+  });
 
-    // старый складываем отдельно, он понадобится в шаге 5
-    client.global.set("old_refresh_token", client.global.get("refresh_token"));
-    client.global.set("access_token", response.body.access_token);
-    client.global.set("refresh_token", response.body.refresh_token);
+  client.test("пришла новая пара", function () {
+    client.assert(response.body.access_token, "нет access_token");
+    client.assert(response.body.refresh_token, "нет refresh_token");
+  });
+
+  const oldRefreshToken = client.global.get("refresh_token");
+  const newRefreshToken = response.body.refresh_token;
+
+  client.log("OLD REFRESH: " + oldRefreshToken);
+  client.log("NEW REFRESH: " + newRefreshToken);
+  client.log("TOKENS EQUAL: " + (oldRefreshToken === newRefreshToken));
+
+  client.test("refresh-токен действительно новый", function () {
+    client.assert(
+      newRefreshToken !== oldRefreshToken,
+      "вернулся тот же refresh — ротация не работает"
+    );
+  });
+
+  client.global.set("old_refresh_token", oldRefreshToken);
+  client.global.set("access_token", response.body.access_token);
+  client.global.set("refresh_token", newRefreshToken);
 %}
 
 
@@ -100,6 +113,8 @@ Authorization: Bearer {{access_token}}
 ### 5. Повторное использование СТАРОГО refresh — должно быть 401
 # Это и есть доказательство, что ротация работает:
 # старый токен удалён из таблицы refresh_tokens и больше не принимается.
+# Побочный эффект: повторное использование считается кражей, поэтому сервер
+# отзывает и refresh из шага 3. Шаг специально последний.
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
