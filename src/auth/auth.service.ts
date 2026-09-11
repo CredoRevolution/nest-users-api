@@ -14,6 +14,7 @@ import { User } from '../users/entities/user.entity';
 import { LoginUserDto } from '../users/dto/login-user.dto';
 import { JwtPayload } from './types/jwt-payload';
 import { RefreshTokensRepository } from './refresh-tokens.repository';
+import { AuthTokensDto } from './dto/auth-tokens.dto';
 
 @Injectable()
 export class AuthService {
@@ -94,7 +95,7 @@ export class AuthService {
     return this.issueTokens(user);
   }
 
-  async issueTokens(user: User) {
+  async issueTokens(user: User): Promise<AuthTokensDto> {
     const payload: JwtPayload = {
       sub: user.id,
       login: user.login,
