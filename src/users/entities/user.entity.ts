@@ -23,6 +23,11 @@ export class User {
   @Exclude()
   passwordHash: string;
 
+  @ApiHideProperty()
+  @Exclude()
+  @Column({ default: 0 })
+  tokenVersion: number;
+
   @Column()
   age: number;
 

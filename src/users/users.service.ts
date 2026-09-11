@@ -79,6 +79,7 @@ export class UsersService {
     const data: Partial<User> = { ...fields };
     if (password) {
       data.passwordHash = await bcrypt.hash(password, 10);
+      data.tokenVersion = user.tokenVersion + 1;
     }
 
     return this.usersRepository.updateUser(user, data);

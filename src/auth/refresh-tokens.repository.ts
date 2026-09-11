@@ -16,12 +16,9 @@ export class RefreshTokensRepository {
     return this.refreshTokenRepository.save(refreshToken);
   }
 
-  findByHash(tokenHash: string): Promise<RefreshToken | null> {
-    return this.refreshTokenRepository.findOneBy({ tokenHash });
-  }
-
-  async deleteById(id: number): Promise<void> {
-    await this.refreshTokenRepository.delete({ id });
+  async deleteByHash(tokenHash: string): Promise<boolean> {
+    const result = await this.refreshTokenRepository.delete({ tokenHash });
+    return result.affected === 1;
   }
 
   async deleteByUserId(userId: number): Promise<void> {

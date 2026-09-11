@@ -73,24 +73,33 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    const storedToken = await this.refreshTokensRepository.findByHash(
+    const tokenWasConsumed = await this.refreshTokensRepository.deleteByHash(
       this.hashToken(refreshToken),
     );
-    if (!storedToken) {
-      throw new UnauthorizedException('Invalid refresh token');
+
+    if (!tokenWasConsumed) {
+      await this.revokeAllSessions(payload.sub);
+      throw new UnauthorizedException(
+        'Refresh token has been already used or revoked',
+      );
     }
-    await this.refreshTokensRepository.deleteById(storedToken.id);
 
     const user = await this.usersService.findById(payload.sub);
     if (!user) {
       throw new UnauthorizedException('Invalid refresh token');
+    } else if (user.tokenVersion !== payload.ver) {
+      throw new UnauthorizedException('Session has been revoked');
     }
 
     return this.issueTokens(user);
   }
 
   async issueTokens(user: User) {
-    const payload: JwtPayload = { sub: user.id, login: user.login };
+    const payload: JwtPayload = {
+      sub: user.id,
+      login: user.login,
+      ver: user.tokenVersion,
+    };
 
     const accessToken = await this.jwtService.signAsync(payload);
     const refreshToken = await this.jwtService.signAsync(

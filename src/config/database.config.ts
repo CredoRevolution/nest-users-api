@@ -3,6 +3,7 @@ import type { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { User } from '../users/entities/user.entity';
 import { InitSchema1788895499169 } from '../migrations/1788895499169-InitSchema';
+import { AddUserTokenVersion1789132788702 } from '../migrations/1789132788702-AddUserTokenVersion';
 
 /**
  * Сущности и миграции перечислены явно, а не глобом: глоб вида `*.{ts,js}`
@@ -10,7 +11,10 @@ import { InitSchema1788895499169 } from '../migrations/1788895499169-InitSchema'
  * если файл переименовали или удалили.
  */
 export const entities = [User, RefreshToken];
-export const migrations = [InitSchema1788895499169];
+export const migrations = [
+  InitSchema1788895499169,
+  AddUserTokenVersion1789132788702,
+];
 
 export const databaseConfig = (
   config: ConfigService,

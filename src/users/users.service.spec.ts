@@ -16,7 +16,12 @@ describe('UsersService', () => {
     softDeleteUser: jest.Mock;
   };
 
-  const user = { id: 1, login: 'sasha', email: 'sasha@example.com' } as User;
+  const user = {
+    id: 1,
+    login: 'sasha',
+    email: 'sasha@example.com',
+    tokenVersion: 3,
+  } as User;
 
   beforeEach(async () => {
     repository = {
@@ -81,6 +86,20 @@ describe('UsersService', () => {
     await expect(
       bcrypt.compare('newpassword', data.passwordHash),
     ).resolves.toBe(true);
+  });
+
+  it('при смене пароля поднимает версию сессий, отзывая старые токены', async () => {
+    await service.updateUser(1, { password: 'newpassword' });
+
+    const data = repository.updateUser.mock.calls[0][1];
+    expect(data.tokenVersion).toBe(4);
+  });
+
+  it('не трогает версию сессий, если пароль не меняется', async () => {
+    await service.updateUser(1, { about: 'hello' });
+
+    const data = repository.updateUser.mock.calls[0][1];
+    expect(data.tokenVersion).toBeUndefined();
   });
 
   it('мягко удаляет существующего пользователя', async () => {

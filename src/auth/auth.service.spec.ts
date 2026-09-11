@@ -19,8 +19,7 @@ describe('AuthService', () => {
   };
   let tokensRepository: {
     create: jest.Mock;
-    findByHash: jest.Mock;
-    deleteById: jest.Mock;
+    deleteByHash: jest.Mock;
     deleteByUserId: jest.Mock;
   };
   let jwtService: {
@@ -29,7 +28,7 @@ describe('AuthService', () => {
     decode: jest.Mock;
   };
 
-  const user = { id: 1, login: 'sasha' } as User;
+  const user = { id: 1, login: 'sasha', tokenVersion: 3 } as User;
   const newUser = {
     login: 'sasha',
     email: 'sasha@example.com',
@@ -47,8 +46,7 @@ describe('AuthService', () => {
     };
     tokensRepository = {
       create: jest.fn(),
-      findByHash: jest.fn(),
-      deleteById: jest.fn(),
+      deleteByHash: jest.fn().mockResolvedValue(true),
       deleteByUserId: jest.fn(),
     };
     jwtService = {
@@ -123,22 +121,73 @@ describe('AuthService', () => {
     ).rejects.toThrow(UnauthorizedException);
   });
 
-  it('при обновлении удаляет старый refresh-токен и выдаёт новую пару', async () => {
-    jwtService.verifyAsync.mockResolvedValue({ sub: 1, login: 'sasha' });
-    tokensRepository.findByHash.mockResolvedValue({ id: 7 });
+  it('кладёт в токены текущую версию сессий пользователя', async () => {
+    await service.issueTokens(user);
 
-    const result = await service.refresh('refresh.jwt');
-
-    expect(tokensRepository.deleteById).toHaveBeenCalledWith(7);
-    expect(result.refresh_token).toBe('refresh.jwt');
+    expect(jwtService.signAsync).toHaveBeenCalledWith({
+      sub: 1,
+      login: 'sasha',
+      ver: 3,
+    });
   });
 
-  it('не принимает refresh-токен, которого нет в базе', async () => {
-    jwtService.verifyAsync.mockResolvedValue({ sub: 1, login: 'sasha' });
-    tokensRepository.findByHash.mockResolvedValue(null);
+  describe('refresh', () => {
+    const oldRefreshToken = 'old.refresh.jwt';
 
-    await expect(service.refresh('refresh.jwt')).rejects.toThrow(
-      UnauthorizedException,
-    );
+    beforeEach(() => {
+      jwtService.verifyAsync.mockResolvedValue({
+        sub: 1,
+        login: 'sasha',
+        ver: 3,
+      });
+    });
+
+    it('удаляет старый токен по хэшу и выдаёт новую пару', async () => {
+      const result = await service.refresh(oldRefreshToken);
+
+      const deletedHash = tokensRepository.deleteByHash.mock.calls[0][0];
+      expect(deletedHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(deletedHash).not.toBe(oldRefreshToken);
+      expect(result).toEqual({
+        access_token: 'access.jwt',
+        refresh_token: 'refresh.jwt',
+      });
+    });
+
+    it('при повторном использовании токена отзывает все сессии', async () => {
+      tokensRepository.deleteByHash.mockResolvedValue(false);
+
+      await expect(service.refresh(oldRefreshToken)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(tokensRepository.deleteByUserId).toHaveBeenCalledWith(1);
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+    });
+
+    it('не принимает токен, выданный до смены пароля', async () => {
+      usersService.findById.mockResolvedValue({ ...user, tokenVersion: 4 });
+
+      await expect(service.refresh(oldRefreshToken)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+    });
+
+    it('не принимает токен удалённого пользователя', async () => {
+      usersService.findById.mockResolvedValue(null);
+
+      await expect(service.refresh(oldRefreshToken)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('не принимает токен с неверной подписью и не трогает базу', async () => {
+      jwtService.verifyAsync.mockRejectedValue(new Error('invalid signature'));
+
+      await expect(service.refresh(oldRefreshToken)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(tokensRepository.deleteByHash).not.toHaveBeenCalled();
+    });
   });
 });
