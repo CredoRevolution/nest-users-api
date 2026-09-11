@@ -1,7 +1,8 @@
-import { NestFactory, Reflector } from '@nestjs/core';
+import { NestFactory, Reflector, HttpAdapterHost } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { QueryFailedFilter } from './common/filters/query-failed.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -14,6 +15,8 @@ async function bootstrap() {
     }),
   );
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
+  const { httpAdapter } = app.get(HttpAdapterHost);
+  app.useGlobalFilters(new QueryFailedFilter(httpAdapter));
 
   const config = new DocumentBuilder()
     .setTitle('Users API')
