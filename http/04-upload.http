@@ -1,27 +1,58 @@
 ###############################################################################
-# UPLOAD — POST /test-upload: принимает ОДНУ картинку (png, jpeg, webp)
-# в поле "file" и кладёт её в MinIO через IFileService.
+# AVATARS — POST /profile/my/avatars: загрузка аватарки текущего пользователя.
+# Одна картинка (png, jpeg, webp) в поле "avatar", файл уходит в MinIO,
+# в таблицу avatars пишется запись { id, name, userId, createdAt }.
 #
 # Перед запуском:
 #   docker compose up -d            — поднимется и MinIO
 #   в .env есть S3_ENDPOINT, S3_BUCKET_NAME, MINIO_ACCESS_KEY, MINIO_SECRET_KEY
 #   бакет из S3_BUCKET_NAME создан в консоли MinIO: http://localhost:9001
 #
+# Файл самодостаточный: первым запросом регистрирует одноразового пользователя
+# и дальше ходит под его токеном. Запускай сверху вниз.
+#
 # Картинки лежат в http/fixtures. Пути в запросах считаются от этого файла.
-#
-# Тип файла проверяется по содержимому (magic numbers), а не по расширению
-# и не по Content-Type части: и то, и другое клиент пишет что захочет.
-# Ответ успешной загрузки: { "path": "test-folder/<uuid>.<расширение>" }.
-#
-# Токен не нужен: гварда на эндпоинте нет.
+# Тип файла должен проверяться по содержимому (magic numbers), а не по
+# расширению и не по Content-Type части: и то, и другое клиент пишет что захочет.
 ###############################################################################
 
-### PNG — ожидаем 201 и путь в бакете
-POST {{baseUrl}}/test-upload
+### Одноразовый пользователь для аватарок
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "avatar_{{$timestamp}}",
+  "email": "avatar_{{$timestamp}}@example.com",
+  "password": "qwerty123",
+  "age": 30
+}
+
+> {%
+    client.global.set("avatar_access_token", response.body.access_token);
+    client.global.set("avatar_refresh_token", response.body.refresh_token);
+%}
+
+
+### Запоминаем его id — сверим с userId в ответах
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{avatar_access_token}}
+
+> {%
+    client.global.set("avatar_user_id", response.body.id);
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# СЧАСТЛИВЫЙ ПУТЬ — ожидаем 201 и запись об аватарке
+# ─────────────────────────────────────────────────────────────────────────────
+
+### PNG — ожидаем 201
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="avatar.png"
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
 Content-Type: image/png
 
 < ./fixtures/avatar.png
@@ -31,19 +62,34 @@ Content-Type: image/png
     client.test("png загружен = 201", function () {
         client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
     });
-    client.test("в ответе путь с .png", function () {
-        client.assert(response.body && /\.png$/.test(response.body.path),
-            "ожидали path вида test-folder/<uuid>.png, пришло " + JSON.stringify(response.body));
+    client.test("в ответе запись об аватарке", function () {
+        client.assert(response.body.id !== undefined, "нет id");
+        client.assert(response.body.name, "нет name");
+        client.assert(response.body.createdAt, "нет createdAt");
     });
+    client.test("аватарка привязана к текущему пользователю", function () {
+        client.assert(response.body.userId === client.global.get("avatar_user_id"),
+            "userId " + response.body.userId + " не совпал с id из профиля");
+    });
+    client.test("deletedAt наружу не отдаётся", function () {
+        client.assert(!("deletedAt" in response.body), "deletedAt уехал клиенту");
+    });
+    client.test("имя файла с расширением .png", function () {
+        client.assert(/\.png$/.test(response.body.name),
+            "ожидали <uuid>.png, пришло " + response.body.name);
+    });
+    client.global.set("first_avatar_id", response.body.id);
+    client.global.set("first_avatar_name", response.body.name);
 %}
 
 
 ### JPEG — ожидаем 201
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="avatar.jpg"
+Content-Disposition: form-data; name="avatar"; filename="avatar.jpg"
 Content-Type: image/jpeg
 
 < ./fixtures/avatar.jpg
@@ -53,19 +99,20 @@ Content-Type: image/jpeg
     client.test("jpeg загружен = 201", function () {
         client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
     });
-    client.test("в ответе путь с .jpg", function () {
-        client.assert(response.body && /\.jpg$/.test(response.body.path),
-            "ожидали path вида test-folder/<uuid>.jpg, пришло " + JSON.stringify(response.body));
+    client.test("имя файла с расширением .jpg", function () {
+        client.assert(/\.jpg$/.test(response.body.name),
+            "ожидали <uuid>.jpg, пришло " + response.body.name);
     });
 %}
 
 
 ### WEBP — ожидаем 201
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="avatar.webp"
+Content-Disposition: form-data; name="avatar"; filename="avatar.webp"
 Content-Type: image/webp
 
 < ./fixtures/avatar.webp
@@ -75,54 +122,48 @@ Content-Type: image/webp
     client.test("webp загружен = 201", function () {
         client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
     });
+    client.test("имя файла с расширением .webp", function () {
+        client.assert(/\.webp$/.test(response.body.name),
+            "ожидали <uuid>.webp, пришло " + response.body.name);
+    });
 %}
 
 
-### Одна и та же картинка дважды — пути должны быть РАЗНЫЕ
-# Если имя в бакете берётся из чего-то постоянного (или из undefined),
-# вторая загрузка молча затрёт первую.
-POST {{baseUrl}}/test-upload
+### Та же картинка ещё раз — новая запись, новое имя
+# Аватарок у пользователя может быть много (ManyToOne), старая не должна
+# затираться ни в таблице, ни в бакете.
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="avatar.png"
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
 Content-Type: image/png
 
 < ./fixtures/avatar.png
 --boundary--
 
 > {%
-    client.global.set("first_upload_path", response.body && response.body.path);
-%}
-
-###
-POST {{baseUrl}}/test-upload
-Content-Type: multipart/form-data; boundary=boundary
-
---boundary
-Content-Disposition: form-data; name="file"; filename="avatar.png"
-Content-Type: image/png
-
-< ./fixtures/avatar.png
---boundary--
-
-> {%
-    client.test("вторая загрузка не затёрла первую", function () {
-        const first = client.global.get("first_upload_path");
-        const second = response.body && response.body.path;
-        client.assert(first && second && first !== second,
-            "пути совпали или пустые: " + first + " и " + second);
+    client.test("повторная загрузка = 201", function () {
+        client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
+    });
+    client.test("новая запись, а не перезапись старой", function () {
+        client.assert(response.body.id !== client.global.get("first_avatar_id"),
+            "id совпал с первой загрузкой");
+        client.assert(response.body.name !== client.global.get("first_avatar_name"),
+            "имя совпало с первой загрузкой — файл в бакете затёрт");
     });
 %}
 
 
 ### Расширение и Content-Type врут, а внутри настоящий PNG — ожидаем 201
 # Решает содержимое. Сохранится как .png, а не .jpg, как заявил клиент.
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="photo.jpg"
+Content-Disposition: form-data; name="avatar"; filename="photo.jpg"
 Content-Type: image/jpeg
 
 < ./fixtures/avatar.png
@@ -133,8 +174,68 @@ Content-Type: image/jpeg
         client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
     });
     client.test("сохранён по реальному типу, как .png", function () {
-        client.assert(response.body && /\.png$/.test(response.body.path),
-            "ожидали .png, пришло " + JSON.stringify(response.body));
+        client.assert(/\.png$/.test(response.body.name),
+            "ожидали .png, пришло " + response.body.name);
+    });
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# АВТОРИЗАЦИЯ — ожидаем 401, файл не должен даже приниматься
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Без токена — ожидаем 401
+POST {{baseUrl}}/profile/my/avatars
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("без токена = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### REFRESH-токен вместо access — ожидаем 401
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_refresh_token}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("refresh вместо access = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Мусор вместо токена — ожидаем 401
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer это-не-токен
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("мусор вместо токена = 401", function () {
+        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
     });
 %}
 
@@ -144,11 +245,12 @@ Content-Type: image/jpeg
 # ─────────────────────────────────────────────────────────────────────────────
 
 ### Обычный текстовый файл — ожидаем 400
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="hello.txt"
+Content-Disposition: form-data; name="avatar"; filename="hello.txt"
 Content-Type: text/plain
 
 Привет, это не картинка.
@@ -164,11 +266,12 @@ Content-Type: text/plain
 ### Текст, притворяющийся PNG (расширение .png, Content-Type image/png) — ожидаем 400
 # Главный тест: если здесь 201, значит тип проверяется по заголовку от клиента,
 # а его подделать проще простого.
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="fake.png"
+Content-Disposition: form-data; name="avatar"; filename="fake.png"
 Content-Type: image/png
 
 < ./fixtures/fake.png
@@ -182,11 +285,12 @@ Content-Type: image/png
 
 
 ### GIF — настоящая картинка, но формат не разрешён — ожидаем 400
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="animation.gif"
+Content-Disposition: form-data; name="avatar"; filename="animation.gif"
 Content-Type: image/gif
 
 < ./fixtures/animation.gif
@@ -202,11 +306,12 @@ Content-Type: image/gif
 ### SVG — ожидаем 400
 # SVG — это XML, внутри может быть <script>. Раздавать такое из бакета
 # с public-read — готовый XSS. Поэтому для аватарок SVG не принимаем.
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="avatar.svg"
+Content-Disposition: form-data; name="avatar"; filename="avatar.svg"
 Content-Type: image/svg+xml
 
 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><script>alert(1)</script></svg>
@@ -220,11 +325,12 @@ Content-Type: image/svg+xml
 
 
 ### Пустой файл с расширением .png — ожидаем 400
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="empty.png"
+Content-Disposition: form-data; name="avatar"; filename="empty.png"
 Content-Type: image/png
 
 --boundary--
@@ -240,13 +346,14 @@ Content-Type: image/png
 # КРИВОЙ MULTIPART — ожидаем 400, до S3 дело не доходит
 # ─────────────────────────────────────────────────────────────────────────────
 
-### Картинка в поле с другим именем — ожидаем 400 (Unexpected field)
-# FileInterceptor ждёт ровно поле "file".
-POST {{baseUrl}}/test-upload
+### Картинка в поле "file" вместо "avatar" — ожидаем 400 (Unexpected field)
+# FileInterceptor ждёт ровно поле "avatar".
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Disposition: form-data; name="file"; filename="avatar.png"
 Content-Type: image/png
 
 < ./fixtures/avatar.png
@@ -259,18 +366,19 @@ Content-Type: image/png
 %}
 
 
-### Две картинки в поле "file" — ожидаем 400
+### Две картинки в поле "avatar" — ожидаем 400
 # FileInterceptor = multer.single(): второй файл в том же поле уже лишний.
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="first.png"
+Content-Disposition: form-data; name="avatar"; filename="first.png"
 Content-Type: image/png
 
 < ./fixtures/avatar.png
 --boundary
-Content-Disposition: form-data; name="file"; filename="second.jpg"
+Content-Disposition: form-data; name="avatar"; filename="second.jpg"
 Content-Type: image/jpeg
 
 < ./fixtures/avatar.jpg
@@ -284,7 +392,8 @@ Content-Type: image/jpeg
 
 
 ### Multipart без файла, только текстовое поле — ожидаем 400
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
@@ -302,11 +411,12 @@ Content-Disposition: form-data; name="description"
 
 ### JSON вместо multipart — ожидаем 400
 # multer пропускает не-multipart запросы мимо себя, файл просто не появляется.
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: application/json
 
 {
-  "file": "это строка, а не файл"
+  "avatar": "это строка, а не файл"
 }
 
 > {%
@@ -317,7 +427,8 @@ Content-Type: application/json
 
 
 ### Совсем пустой запрос — ожидаем 400
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 
 > {%
     client.test("пустой запрос = 400", function () {
@@ -332,13 +443,14 @@ POST {{baseUrl}}/test-upload
 
 ### Слишком большая картинка — ожидаем 413
 # Как проверить: положи любую фотку больше 5 МБ в http/fixtures/big.jpg
-# (в git её не коммить). Лимит стоит в multer, поэтому гигабайтный файл
+# (в git её не коммить). Лимит должен стоять в multer, тогда гигабайтный файл
 # отсекается ещё на приёме, а не после того, как целиком лёг в память.
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="big.jpg"
+Content-Disposition: form-data; name="avatar"; filename="big.jpg"
 Content-Type: image/jpeg
 
 < ./fixtures/big.jpg
@@ -351,16 +463,17 @@ Content-Type: image/jpeg
 %}
 
 
-### MinIO лежит — ожидаем 400 (UploadException)
+### MinIO лежит — ожидаем 400 (UploadException), и записи в базе быть не должно
 # Как проверить: docker compose stop minio, выполни запрос, потом
 # docker compose start minio. SDK сначала сделает несколько повторов,
 # поэтому ответ придёт не сразу. UploadException наследует BadRequestException,
 # отсюда 400, а не 502/503 — решай сам, устраивает ли это.
-POST {{baseUrl}}/test-upload
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
 
 --boundary
-Content-Disposition: form-data; name="file"; filename="avatar.png"
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
 Content-Type: image/png
 
 < ./fixtures/avatar.png
