@@ -1,0 +1,367 @@
+###############################################################################
+# UPLOAD — POST /test-upload: принимает ОДНУ картинку (png, jpeg, webp)
+# в поле "file" и кладёт её в MinIO через IFileService.
+#
+# Перед запуском:
+#   docker compose up -d            — поднимется и MinIO
+#   в .env есть S3_ENDPOINT, S3_BUCKET_NAME, MINIO_ACCESS_KEY, MINIO_SECRET_KEY
+#   бакет из S3_BUCKET_NAME создан в консоли MinIO: http://localhost:9001
+#
+# Картинки лежат в http/fixtures. Пути в запросах считаются от этого файла.
+#
+# Тип файла проверяется по содержимому (magic numbers), а не по расширению
+# и не по Content-Type части: и то, и другое клиент пишет что захочет.
+# Ответ успешной загрузки: { "path": "test-folder/<uuid>.<расширение>" }.
+#
+# Токен не нужен: гварда на эндпоинте нет.
+###############################################################################
+
+### PNG — ожидаем 201 и путь в бакете
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("png загружен = 201", function () {
+        client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
+    });
+    client.test("в ответе путь с .png", function () {
+        client.assert(response.body && /\.png$/.test(response.body.path),
+            "ожидали path вида test-folder/<uuid>.png, пришло " + JSON.stringify(response.body));
+    });
+%}
+
+
+### JPEG — ожидаем 201
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="avatar.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/avatar.jpg
+--boundary--
+
+> {%
+    client.test("jpeg загружен = 201", function () {
+        client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
+    });
+    client.test("в ответе путь с .jpg", function () {
+        client.assert(response.body && /\.jpg$/.test(response.body.path),
+            "ожидали path вида test-folder/<uuid>.jpg, пришло " + JSON.stringify(response.body));
+    });
+%}
+
+
+### WEBP — ожидаем 201
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="avatar.webp"
+Content-Type: image/webp
+
+< ./fixtures/avatar.webp
+--boundary--
+
+> {%
+    client.test("webp загружен = 201", function () {
+        client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
+    });
+%}
+
+
+### Одна и та же картинка дважды — пути должны быть РАЗНЫЕ
+# Если имя в бакете берётся из чего-то постоянного (или из undefined),
+# вторая загрузка молча затрёт первую.
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.global.set("first_upload_path", response.body && response.body.path);
+%}
+
+###
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("вторая загрузка не затёрла первую", function () {
+        const first = client.global.get("first_upload_path");
+        const second = response.body && response.body.path;
+        client.assert(first && second && first !== second,
+            "пути совпали или пустые: " + first + " и " + second);
+    });
+%}
+
+
+### Расширение и Content-Type врут, а внутри настоящий PNG — ожидаем 201
+# Решает содержимое. Сохранится как .png, а не .jpg, как заявил клиент.
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="photo.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("настоящий png под видом jpg = 201", function () {
+        client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
+    });
+    client.test("сохранён по реальному типу, как .png", function () {
+        client.assert(response.body && /\.png$/.test(response.body.path),
+            "ожидали .png, пришло " + JSON.stringify(response.body));
+    });
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# НЕ КАРТИНКИ И НЕРАЗРЕШЁННЫЕ ФОРМАТЫ — ожидаем 400
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Обычный текстовый файл — ожидаем 400
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="hello.txt"
+Content-Type: text/plain
+
+Привет, это не картинка.
+--boundary--
+
+> {%
+    client.test("текст = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Текст, притворяющийся PNG (расширение .png, Content-Type image/png) — ожидаем 400
+# Главный тест: если здесь 201, значит тип проверяется по заголовку от клиента,
+# а его подделать проще простого.
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="fake.png"
+Content-Type: image/png
+
+< ./fixtures/fake.png
+--boundary--
+
+> {%
+    client.test("подделка под png = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### GIF — настоящая картинка, но формат не разрешён — ожидаем 400
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="animation.gif"
+Content-Type: image/gif
+
+< ./fixtures/animation.gif
+--boundary--
+
+> {%
+    client.test("gif = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### SVG — ожидаем 400
+# SVG — это XML, внутри может быть <script>. Раздавать такое из бакета
+# с public-read — готовый XSS. Поэтому для аватарок SVG не принимаем.
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="avatar.svg"
+Content-Type: image/svg+xml
+
+<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><script>alert(1)</script></svg>
+--boundary--
+
+> {%
+    client.test("svg = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Пустой файл с расширением .png — ожидаем 400
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="empty.png"
+Content-Type: image/png
+
+--boundary--
+
+> {%
+    client.test("пустой файл = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# КРИВОЙ MULTIPART — ожидаем 400, до S3 дело не доходит
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Картинка в поле с другим именем — ожидаем 400 (Unexpected field)
+# FileInterceptor ждёт ровно поле "file".
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("чужое имя поля = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Две картинки в поле "file" — ожидаем 400
+# FileInterceptor = multer.single(): второй файл в том же поле уже лишний.
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="first.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary
+Content-Disposition: form-data; name="file"; filename="second.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/avatar.jpg
+--boundary--
+
+> {%
+    client.test("две картинки вместо одной = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Multipart без файла, только текстовое поле — ожидаем 400
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="description"
+
+файла нет
+--boundary--
+
+> {%
+    client.test("multipart без файла = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### JSON вместо multipart — ожидаем 400
+# multer пропускает не-multipart запросы мимо себя, файл просто не появляется.
+POST {{baseUrl}}/test-upload
+Content-Type: application/json
+
+{
+  "file": "это строка, а не файл"
+}
+
+> {%
+    client.test("JSON вместо файла = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Совсем пустой запрос — ожидаем 400
+POST {{baseUrl}}/test-upload
+
+> {%
+    client.test("пустой запрос = 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# РУЧНЫЕ ПРОВЕРКИ
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Слишком большая картинка — ожидаем 413
+# Как проверить: положи любую фотку больше 5 МБ в http/fixtures/big.jpg
+# (в git её не коммить). Лимит стоит в multer, поэтому гигабайтный файл
+# отсекается ещё на приёме, а не после того, как целиком лёг в память.
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="big.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/big.jpg
+--boundary--
+
+> {%
+    client.test("больше лимита = 413", function () {
+        client.assert(response.status === 413, "ожидали 413, пришло " + response.status);
+    });
+%}
+
+
+### MinIO лежит — ожидаем 400 (UploadException)
+# Как проверить: docker compose stop minio, выполни запрос, потом
+# docker compose start minio. SDK сначала сделает несколько повторов,
+# поэтому ответ придёт не сразу. UploadException наследует BadRequestException,
+# отсюда 400, а не 502/503 — решай сам, устраивает ли это.
+POST {{baseUrl}}/test-upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--

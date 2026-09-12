@@ -7,6 +7,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { databaseConfig } from './config/database.config';
 import { AuthModule } from './auth/auth.module';
 import { ProfileModule } from './profile/profile.module';
+import { FilesModule } from './providers/files/files.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ProfileModule } from './profile/profile.module';
     UsersModule,
     AuthModule,
     ProfileModule,
+    FilesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
