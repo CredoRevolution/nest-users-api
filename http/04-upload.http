@@ -1,6 +1,6 @@
 ###############################################################################
 # AVATARS — POST /profile/my/avatars: загрузка аватарки текущего пользователя.
-# Одна картинка (png, jpeg, webp) в поле "avatar", файл уходит в MinIO,
+# Одна картинка (png или jpeg) в поле "avatar", файл уходит в MinIO,
 # в таблицу avatars пишется запись { id, name, userId, createdAt }.
 #
 # Перед запуском:
@@ -102,29 +102,6 @@ Content-Type: image/jpeg
     client.test("имя файла с расширением .jpg", function () {
         client.assert(/\.jpg$/.test(response.body.name),
             "ожидали <uuid>.jpg, пришло " + response.body.name);
-    });
-%}
-
-
-### WEBP — ожидаем 201
-POST {{baseUrl}}/profile/my/avatars
-Authorization: Bearer {{avatar_access_token}}
-Content-Type: multipart/form-data; boundary=boundary
-
---boundary
-Content-Disposition: form-data; name="avatar"; filename="avatar.webp"
-Content-Type: image/webp
-
-< ./fixtures/avatar.webp
---boundary--
-
-> {%
-    client.test("webp загружен = 201", function () {
-        client.assert(response.status === 201, "ожидали 201, пришло " + response.status);
-    });
-    client.test("имя файла с расширением .webp", function () {
-        client.assert(/\.webp$/.test(response.body.name),
-            "ожидали <uuid>.webp, пришло " + response.body.name);
     });
 %}
 
@@ -241,10 +218,10 @@ Content-Type: image/png
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# НЕ КАРТИНКИ И НЕРАЗРЕШЁННЫЕ ФОРМАТЫ — ожидаем 400
+# НЕ КАРТИНКИ И НЕРАЗРЕШЁННЫЕ ФОРМАТЫ — ожидаем 422
 # ─────────────────────────────────────────────────────────────────────────────
 
-### Обычный текстовый файл — ожидаем 400
+### Обычный текстовый файл — ожидаем 422
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
@@ -257,13 +234,13 @@ Content-Type: text/plain
 --boundary--
 
 > {%
-    client.test("текст = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    client.test("текст = 422", function () {
+        client.assert(response.status === 422, "ожидали 422, пришло " + response.status);
     });
 %}
 
 
-### Текст, притворяющийся PNG (расширение .png, Content-Type image/png) — ожидаем 400
+### Текст, притворяющийся PNG (расширение .png, Content-Type image/png) — ожидаем 422
 # Главный тест: если здесь 201, значит тип проверяется по заголовку от клиента,
 # а его подделать проще простого.
 POST {{baseUrl}}/profile/my/avatars
@@ -278,13 +255,13 @@ Content-Type: image/png
 --boundary--
 
 > {%
-    client.test("подделка под png = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    client.test("подделка под png = 422", function () {
+        client.assert(response.status === 422, "ожидали 422, пришло " + response.status);
     });
 %}
 
 
-### GIF — настоящая картинка, но формат не разрешён — ожидаем 400
+### GIF — настоящая картинка, но формат не разрешён — ожидаем 422
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
@@ -297,13 +274,32 @@ Content-Type: image/gif
 --boundary--
 
 > {%
-    client.test("gif = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    client.test("gif = 422", function () {
+        client.assert(response.status === 422, "ожидали 422, пришло " + response.status);
     });
 %}
 
 
-### SVG — ожидаем 400
+### WEBP — настоящая картинка, но по заданию разрешены только png и jpeg — ожидаем 422
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{avatar_access_token}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.webp"
+Content-Type: image/webp
+
+< ./fixtures/avatar.webp
+--boundary--
+
+> {%
+    client.test("webp = 422", function () {
+        client.assert(response.status === 422, "ожидали 422, пришло " + response.status);
+    });
+%}
+
+
+### SVG — ожидаем 422
 # SVG — это XML, внутри может быть <script>. Раздавать такое из бакета
 # с public-read — готовый XSS. Поэтому для аватарок SVG не принимаем.
 POST {{baseUrl}}/profile/my/avatars
@@ -318,13 +314,13 @@ Content-Type: image/svg+xml
 --boundary--
 
 > {%
-    client.test("svg = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    client.test("svg = 422", function () {
+        client.assert(response.status === 422, "ожидали 422, пришло " + response.status);
     });
 %}
 
 
-### Пустой файл с расширением .png — ожидаем 400
+### Пустой файл с расширением .png — ожидаем 422
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
@@ -336,18 +332,26 @@ Content-Type: image/png
 --boundary--
 
 > {%
-    client.test("пустой файл = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    client.test("пустой файл = 422", function () {
+        client.assert(response.status === 422, "ожидали 422, пришло " + response.status);
     });
 %}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# КРИВОЙ MULTIPART — ожидаем 400, до S3 дело не доходит
+# КРИВОЙ MULTIPART — до S3 дело не доходит
+#
+# Файл проверяют два слоя, и каждый отвечает своим кодом:
+#   FileInterceptor (Multer)  →  ParseFilePipe  →  метод контроллера
+#   чужое поле, 2 файла → 400     нет файла, неверный тип → 422
+#   слишком большой     → 413     (errorHttpStatusCode в pipe)
+# Multer срабатывает раньше pipe-а, и errorHttpStatusCode на него не влияет:
+# свои ошибки он маппит сам (transformException в
+# node_modules/@nestjs/platform-express/multer/multer/multer.utils.js).
 # ─────────────────────────────────────────────────────────────────────────────
 
 ### Картинка в поле "file" вместо "avatar" — ожидаем 400 (Unexpected field)
-# FileInterceptor ждёт ровно поле "avatar".
+# FileInterceptor ждёт ровно поле "avatar". Отбивает Multer, а не pipe.
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
@@ -366,8 +370,9 @@ Content-Type: image/png
 %}
 
 
-### Две картинки в поле "avatar" — ожидаем 400
+### Две картинки в поле "avatar" — ожидаем 400 (Unexpected field)
 # FileInterceptor = multer.single(): второй файл в том же поле уже лишний.
+# Отбивает Multer, а не pipe.
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
@@ -391,7 +396,7 @@ Content-Type: image/jpeg
 %}
 
 
-### Multipart без файла, только текстовое поле — ожидаем 400
+### Multipart без файла, только текстовое поле — ожидаем 422
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
@@ -403,13 +408,13 @@ Content-Disposition: form-data; name="description"
 --boundary--
 
 > {%
-    client.test("multipart без файла = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    client.test("multipart без файла = 422", function () {
+        client.assert(response.status === 422, "ожидали 422, пришло " + response.status);
     });
 %}
 
 
-### JSON вместо multipart — ожидаем 400
+### JSON вместо multipart — ожидаем 422
 # multer пропускает не-multipart запросы мимо себя, файл просто не появляется.
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
@@ -420,19 +425,19 @@ Content-Type: application/json
 }
 
 > {%
-    client.test("JSON вместо файла = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    client.test("JSON вместо файла = 422", function () {
+        client.assert(response.status === 422, "ожидали 422, пришло " + response.status);
     });
 %}
 
 
-### Совсем пустой запрос — ожидаем 400
+### Совсем пустой запрос — ожидаем 422
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
 
 > {%
-    client.test("пустой запрос = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    client.test("пустой запрос = 422", function () {
+        client.assert(response.status === 422, "ожидали 422, пришло " + response.status);
     });
 %}
 
@@ -442,9 +447,12 @@ Authorization: Bearer {{avatar_access_token}}
 # ─────────────────────────────────────────────────────────────────────────────
 
 ### Слишком большая картинка — ожидаем 413
-# Как проверить: положи любую фотку больше 5 МБ в http/fixtures/big.jpg
-# (в git её не коммить). Лимит должен стоять в multer, тогда гигабайтный файл
-# отсекается ещё на приёме, а не после того, как целиком лёг в память.
+# Лимит 10 МБ стоит в multer, поэтому гигабайтный файл отсекается ещё
+# на приёме, а не после того, как целиком лёг в память.
+# Как проверить: в Git Bash создай файл на 11 МБ из случайных байтов
+#   head -c 11M /dev/urandom > http/fixtures/big.jpg
+# Это не картинка, но Multer оборвёт приём по размеру раньше, чем кто-то
+# посмотрит на содержимое. Файл в .gitignore, не коммить его.
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary
@@ -466,8 +474,9 @@ Content-Type: image/jpeg
 ### MinIO лежит — ожидаем 400 (UploadException), и записи в базе быть не должно
 # Как проверить: docker compose stop minio, выполни запрос, потом
 # docker compose start minio. SDK сначала сделает несколько повторов,
-# поэтому ответ придёт не сразу. UploadException наследует BadRequestException,
-# отсюда 400, а не 502/503 — решай сам, устраивает ли это.
+# поэтому ответ придёт не сразу. UploadException наследует BadRequestException
+# и бросается из сервиса, а не из pipe-а, так что errorHttpStatusCode тут
+# ни при чём: отсюда 400, а не 422 и не 502/503 — решай сам, устраивает ли это.
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{avatar_access_token}}
 Content-Type: multipart/form-data; boundary=boundary

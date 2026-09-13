@@ -1,5 +1,7 @@
 import {
   Controller,
+  HttpStatus,
+  ParseFilePipeBuilder,
   Post,
   UploadedFile,
   UseGuards,
@@ -16,9 +18,24 @@ export class AvatarsController {
   constructor(private readonly avatarsService: AvatarsService) {}
 
   @Post()
-  @UseInterceptors(FileInterceptor('avatar'))
+  @UseInterceptors(
+    FileInterceptor('avatar', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
   async uploadFile(
-    @UploadedFile() avatar: Express.Multer.File,
+    @UploadedFile(
+      new ParseFilePipeBuilder()
+        .addFileTypeValidator({
+          fileType: /^image\/(png|jpeg)$/,
+          overrideMimeType: true,
+        })
+        .addMaxSizeValidator({
+          maxSize: 10 * 1024 * 1024,
+        })
+        .build({
+          errorHttpStatusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+        }),
+    )
+    avatar: Express.Multer.File,
     @CurrentUser('sub') userId: number,
   ) {
     return await this.avatarsService.uploadAvatar(avatar, userId);
