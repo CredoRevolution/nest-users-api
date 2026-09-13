@@ -17,4 +17,8 @@ export class AvatarsRepository {
     });
     return this.avatarsRepository.save(result);
   }
+
+  countUserAvatars(userId: number) {
+    return this.avatarsRepository.count({ where: { userId } });
+  }
 }
