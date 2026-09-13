@@ -1,4 +1,9 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { IFileService } from '../providers/files/files.adapter';
 import { AvatarsRepository } from './avatars.repository';
@@ -29,6 +34,17 @@ class AvatarsService {
 
     await this.fileService.uploadFile(payload);
     return this.avatarsRepository.createUserAvatar(userId, fileName);
+  }
+
+  async deleteAvatar(avatarId: number, userId: number) {
+    const avatar = await this.avatarsRepository.findOneById(avatarId);
+    if (!avatar) {
+      throw new NotFoundException('Avatar not found');
+    }
+    if (avatar.userId !== userId) {
+      throw new ForbiddenException('You are not allowed to delete this avatar');
+    }
+    return this.avatarsRepository.softDeleteAvatar(avatarId);
   }
 }
 

@@ -21,4 +21,12 @@ export class AvatarsRepository {
   countUserAvatars(userId: number) {
     return this.avatarsRepository.count({ where: { userId } });
   }
+
+  findOneById(avatarId: number) {
+    return this.avatarsRepository.findOneBy({ id: avatarId });
+  }
+
+  softDeleteAvatar(avatarId: number) {
+    return this.avatarsRepository.softDelete(avatarId);
+  }
 }
