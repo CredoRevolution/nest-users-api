@@ -1,11 +1,4 @@
-import {
-  Controller,
-  Get,
-  Param,
-  ParseIntPipe,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -20,6 +13,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { FindUsersDto } from './dto/find-users.dto';
 import { PaginatedUsersDto } from './dto/paginated-users.dto';
 import { User } from './entities/user.entity';
+import { IdParamDto } from '../common/dto/id-param.dto';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -44,9 +38,11 @@ export class UsersController {
   @Get(':id')
   @ApiOperation({ summary: 'Получить пользователя по id' })
   @ApiOkResponse({ type: User })
-  @ApiBadRequestResponse({ description: 'id не является целым числом' })
+  @ApiBadRequestResponse({
+    description: 'id не целое число или вне диапазона 1..2147483647',
+  })
   @ApiNotFoundResponse({ description: 'Пользователь не найден или удалён' })
-  findOne(@Param('id', ParseIntPipe) id: number): Promise<User> {
+  findOne(@Param() { id }: IdParamDto): Promise<User> {
     return this.userService.findByIdOrFail(id);
   }
 }

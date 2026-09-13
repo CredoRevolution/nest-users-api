@@ -56,6 +56,28 @@ describe('QueryFailedFilter', () => {
     expect(body).not.toContain('sasha@example.com');
   });
 
+  it('превращает выход числа за диапазон типа в 400 без самого значения', () => {
+    filter.catch(
+      queryFailed({
+        code: '22003',
+        message: 'value "99999999999" is out of range for type integer',
+      }),
+      host,
+    );
+
+    expect(httpAdapter.reply).toHaveBeenCalledWith(
+      response,
+      {
+        statusCode: HttpStatus.BAD_REQUEST,
+        message: 'Numeric value is out of range',
+        error: 'Bad Request',
+      },
+      HttpStatus.BAD_REQUEST,
+    );
+    const body = JSON.stringify(httpAdapter.reply.mock.calls[0][1]);
+    expect(body).not.toContain('99999999999');
+  });
+
   it('остальные ошибки базы оставляет 500', () => {
     jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
 

@@ -151,7 +151,54 @@ Authorization: Bearer {{second_access_token}}
 GET {{baseUrl}}/users/999999
 Authorization: Bearer {{second_access_token}}
 
+> {%
+    client.test("несуществующий id = 404", function () {
+        client.assert(response.status === 404, "ожидали 404, пришло " + response.status);
+    });
+%}
+
 
 ### Идентификатор буквами — ожидаем 400
 GET {{baseUrl}}/users/abc
 Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("id = abc → 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Ноль — ожидаем 400 (@Min(1) в IdParamDto)
+GET {{baseUrl}}/users/0
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("id = 0 → 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Максимальный integer — id корректный, но такого пользователя нет — ожидаем 404
+GET {{baseUrl}}/users/2147483647
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("id = 2147483647 → 404", function () {
+        client.assert(response.status === 404, "ожидали 404, пришло " + response.status);
+    });
+%}
+
+
+### На единицу больше integer — ожидаем 400 (@Max в IdParamDto), а не 500
+# Колонка users.id — SERIAL, то есть integer. Раньше ParseIntPipe такое число
+# пропускал, Postgres падал с "value out of range", и наружу уходил 500.
+GET {{baseUrl}}/users/2147483648
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("id больше integer → 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}

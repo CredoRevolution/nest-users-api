@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsString,
   Length,
+  Max,
   Min,
 } from 'class-validator';
 
@@ -30,6 +31,7 @@ export class CreateUserDto {
   @IsNotEmpty({ message: 'age is required' })
   @IsInt()
   @Min(1, { message: 'age must be greater than 1' })
+  @Max(150, { message: 'age must be less than 150' })
   age: number;
 
   @Length(0, 1000, { message: 'about must be not more than 1000 characters' })
