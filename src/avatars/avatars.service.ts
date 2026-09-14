@@ -8,6 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { IFileService } from '../providers/files/files.adapter';
 import { AvatarsRepository } from './avatars.repository';
 
+const MAX_ACTIVE_AVATARS = 5;
+
 @Injectable()
 class AvatarsService {
   constructor(
@@ -15,12 +17,10 @@ class AvatarsService {
     private readonly avatarsRepository: AvatarsRepository,
   ) {}
 
-  private MAX_ACTIVE_AVATARS = 5;
-
   async uploadAvatar(avatar: Express.Multer.File, userId: number) {
     const currentUserAvatarsCount =
       await this.avatarsRepository.countUserAvatars(userId);
-    if (this.MAX_ACTIVE_AVATARS <= currentUserAvatarsCount) {
+    if (MAX_ACTIVE_AVATARS <= currentUserAvatarsCount) {
       throw new ConflictException(
         'Max avatars count reached. Delete one of your avatars to upload a new one',
       );
