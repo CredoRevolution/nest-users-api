@@ -86,7 +86,7 @@ Content-Type: application/json
   "login": "other_{{$timestamp}}",
   "email": "{{userEmail}}",
   "password": "qwerty123",
-  "age": 28
+  "age": 29
 }
 
 > {%

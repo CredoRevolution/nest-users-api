@@ -202,3 +202,180 @@ Authorization: Bearer {{second_access_token}}
         client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
     });
 %}
+
+
+###############################################################################
+# ACTIVE USERS — активные пользователи в диапазоне возраста.
+#
+# GET /users/active?minAge=18&maxAge=30
+# Активный = не удалён, заполнено about, больше двух неудалённых аватаров.
+# В ответе id, login, avatars_count и latest_avatar (имя самого свежего аватара).
+# По умолчанию minAge = 1, maxAge = 150, границы включительно (BETWEEN).
+#
+# Роут 'active' объявлен в контроллере раньше ':id'. Если порядок поменять,
+# /users/active уйдёт в findOne и вернёт 400 «id не целое число».
+###############################################################################
+
+### Активные без токена — ожидаем 401
+GET {{baseUrl}}/users/active
+
+> {%
+    client.test("активные закрыты для неавторизованных", function () {
+        client.assert(response.status === 401,
+            "ожидали 401, пришло " + response.status);
+    });
+%}
+
+
+### Активные без параметров — диапазон по умолчанию 1..150
+GET {{baseUrl}}/users/active
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("без параметров → 200 и массив", function () {
+        client.assert(response.status === 200,
+            "ожидали 200, пришло " + response.status + " — не перехватил ли запрос роут :id?");
+        client.assert(Array.isArray(response.body), "ожидали массив");
+    });
+    client.test("у каждого больше двух аватаров и есть последний аватар", function () {
+        response.body.forEach(function (user) {
+            // COUNT() в Postgres — bigint, драйвер pg отдаёт его строкой
+            client.assert(Number(user.avatars_count) > 2,
+                "у " + user.login + " avatars_count = " + user.avatars_count);
+            client.assert(!!user.latest_avatar, "у " + user.login + " нет latest_avatar");
+        });
+    });
+    client.test("хеш пароля наружу не уходит", function () {
+        response.body.forEach(function (user) {
+            client.assert(user.passwordHash === undefined, "в ответе есть passwordHash");
+        });
+    });
+%}
+
+
+### Обычный диапазон
+GET {{baseUrl}}/users/active?minAge=18&maxAge=30
+Authorization: Bearer {{second_access_token}}
+
+
+### Только нижняя граница — maxAge берётся по умолчанию
+GET {{baseUrl}}/users/active?minAge=25
+Authorization: Bearer {{second_access_token}}
+
+
+### Только верхняя граница — minAge берётся по умолчанию
+GET {{baseUrl}}/users/active?maxAge=40
+Authorization: Bearer {{second_access_token}}
+
+
+### minAge = maxAge — ровно один возраст, BETWEEN включает обе границы
+GET {{baseUrl}}/users/active?minAge=25&maxAge=25
+Authorization: Bearer {{second_access_token}}
+
+
+### minAge больше maxAge — ожидаем пустой массив, не ошибку
+# Перекрёстной проверки в DTO нет, а BETWEEN 50 AND 20 в Postgres просто
+# ничего не находит (границы не меняются местами сами).
+GET {{baseUrl}}/users/active?minAge=50&maxAge=20
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("minAge > maxAge → пустой массив", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+        client.assert(response.body.length === 0, "ожидали пустой массив");
+    });
+%}
+
+
+### Верхняя граница maxAge = 150 — ожидаем 200
+GET {{baseUrl}}/users/active?maxAge=150
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("maxAge = 150 → 200", function () {
+        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    });
+%}
+
+
+### maxAge = 151 — ожидаем 400
+GET {{baseUrl}}/users/active?maxAge=151
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("maxAge = 151 → 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### minAge = 0 — ожидаем 400 (@Min(1))
+GET {{baseUrl}}/users/active?minAge=0
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("minAge = 0 → 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Отрицательный возраст — ожидаем 400
+GET {{baseUrl}}/users/active?minAge=-5&maxAge=30
+Authorization: Bearer {{second_access_token}}
+
+
+### maxAge = 0 — ожидаем 400
+GET {{baseUrl}}/users/active?maxAge=0
+Authorization: Bearer {{second_access_token}}
+
+
+### Возраст буквами — ожидаем 400
+GET {{baseUrl}}/users/active?minAge=abc
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("minAge = abc → 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Дробный возраст — ожидаем 400 (@IsInt)
+GET {{baseUrl}}/users/active?minAge=18.5
+Authorization: Bearer {{second_access_token}}
+
+
+### Пустое значение — ожидаем 400
+# ?minAge= приходит пустой строкой, Number('') = 0, дальше срабатывает @Min(1).
+GET {{baseUrl}}/users/active?minAge=
+Authorization: Bearer {{second_access_token}}
+
+
+### minAge больше integer — ожидаем 400, а не 500
+# Та же история, что с /users/2147483648: у minAge нет @Max, число проходит
+# валидацию и уходит в BETWEEN против integer-колонки age.
+GET {{baseUrl}}/users/active?minAge=2147483648
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("minAge больше integer → 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Неизвестный параметр — ожидаем 400 (его нет в FindActiveUsersDto)
+GET {{baseUrl}}/users/active?minAge=18&page=1
+Authorization: Bearer {{second_access_token}}
+
+> {%
+    client.test("лишний параметр → 400", function () {
+        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    });
+%}
+
+
+### Попытка SQL-инъекции в возрасте — ожидаем 400 от валидации, до базы не доходит
+GET {{baseUrl}}/users/active?minAge=1 OR 1=1
+Authorization: Bearer {{second_access_token}}

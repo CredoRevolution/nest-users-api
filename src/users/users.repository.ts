@@ -4,6 +4,21 @@ import { User } from './entities/user.entity';
 import { ILike, Repository } from 'typeorm';
 import { CreateUserData } from './types/CreateUserData';
 import { FindUsersDto } from './dto/find-users.dto';
+import { FindActiveUsersResponseDto } from './dto/find-active-users-response.dto';
+
+const FIND_ACTIVE_USERS_SQL = `
+    WITH latest_avatars AS (SELECT DISTINCT ON(avatars."userId")avatars."userId", avatars.name, avatars."createdAt"
+    FROM avatars
+    WHERE avatars."deletedAt" IS NULL
+    ORDER BY avatars."userId", avatars."createdAt" DESC)
+    SELECT u.id, u.login, COUNT(a.id)::int AS "avatarsCount", la.name AS "latestAvatar"
+    FROM users u
+    JOIN avatars a ON a."userId" = u.id
+    JOIN latest_avatars la ON la."userId" = u.id
+    WHERE u."deletedAt" IS NULL AND u.about IS NOT NULL AND u.about != '' AND u.age BETWEEN $1 AND $2 AND a."deletedAt" IS NULL
+    GROUP BY u.id, u.login, la.name
+    HAVING COUNT(a.id) > 2
+  `;
 
 @Injectable()
 export class UsersRepository {
@@ -58,6 +73,16 @@ export class UsersRepository {
 
   updateUser(user: User, data: Partial<User>): Promise<User> {
     return this.userRepository.save(this.userRepository.merge(user, data));
+  }
+
+  async findActiveUsers(
+    minAge: number,
+    maxAge: number,
+  ): Promise<FindActiveUsersResponseDto[]> {
+    return await this.userRepository.query(FIND_ACTIVE_USERS_SQL, [
+      minAge,
+      maxAge,
+    ]);
   }
 
   async softDeleteUser(id: number): Promise<void> {

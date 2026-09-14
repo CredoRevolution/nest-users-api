@@ -10,6 +10,7 @@ import { CreateUserData } from './types/CreateUserData';
 import { FindUsersDto } from './dto/find-users.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { PaginatedUsersDto } from './dto/paginated-users.dto';
+import { FindActiveUsersResponseDto } from './dto/find-active-users-response.dto';
 
 @Injectable()
 export class UsersService {
@@ -88,5 +89,12 @@ export class UsersService {
   async softDeleteUser(id: number): Promise<void> {
     await this.findByIdOrFail(id);
     await this.usersRepository.softDeleteUser(id);
+  }
+
+  async findActiveUsers(
+    minAge: number,
+    maxAge: number,
+  ): Promise<FindActiveUsersResponseDto[]> {
+    return await this.usersRepository.findActiveUsers(minAge, maxAge);
   }
 }

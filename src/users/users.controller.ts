@@ -14,6 +14,8 @@ import { FindUsersDto } from './dto/find-users.dto';
 import { PaginatedUsersDto } from './dto/paginated-users.dto';
 import { User } from './entities/user.entity';
 import { IdParamDto } from '../common/dto/id-param.dto';
+import { FindActiveUsersDto } from './dto/find-active-users.dto';
+import { FindActiveUsersResponseDto } from './dto/find-active-users-response.dto';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -33,6 +35,13 @@ export class UsersController {
   @ApiBadRequestResponse({ description: 'Некорректные page, limit или login' })
   findAll(@Query() query: FindUsersDto): Promise<PaginatedUsersDto> {
     return this.userService.findAll(query);
+  }
+
+  @Get('active')
+  findAllActive(
+    @Query() { minAge, maxAge }: FindActiveUsersDto,
+  ): Promise<FindActiveUsersResponseDto[]> {
+    return this.userService.findActiveUsers(minAge, maxAge);
   }
 
   @Get(':id')

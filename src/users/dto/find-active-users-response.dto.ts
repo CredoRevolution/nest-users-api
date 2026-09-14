@@ -1,18 +1,21 @@
-import { Type } from 'class-transformer';
-import { IsInt, IsOptional, Max, Min } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
 
-export class FindActiveUsersDto {
-  @IsInt({ message: 'minAge must be an integer' })
-  @Min(1, { message: 'minAge must be at least 1' })
-  @Max(150, { message: 'minAge must not be greater than 150' })
-  @Type(() => Number)
-  @IsOptional()
-  minAge: number = 1;
+export class FindActiveUsersResponseDto {
+  @ApiProperty({ example: 42 })
+  id: number;
 
-  @IsInt({ message: 'maxAge must be an integer' })
-  @Min(1, { message: 'maxAge must be at least 1' })
-  @Max(150, { message: 'maxAge must not be greater than 150' })
-  @Type(() => Number)
-  @IsOptional()
-  maxAge: number = 150;
+  @ApiProperty({ example: 'sasha' })
+  login: string;
+
+  @ApiProperty({
+    description: 'Количество неудалённых аватаров',
+    example: 3,
+  })
+  avatarsCount: number;
+
+  @ApiProperty({
+    description: 'Имя файла самого свежего неудалённого аватара',
+    example: '3f2b8c1e-9a4d-4e7b-b6a1-5c0d2e8f7a90.png',
+  })
+  latestAvatar: string;
 }
