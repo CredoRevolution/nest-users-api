@@ -6,6 +6,7 @@ import { InitSchema1788895499169 } from '../migrations/1788895499169-InitSchema'
 import { AddUserTokenVersion1789132788702 } from '../migrations/1789132788702-AddUserTokenVersion';
 import { Avatar } from '../avatars/entities/avatar.entity';
 import { AddAvatars1789247071474 } from '../migrations/1789247071474-AddAvatars';
+import { AddIndexes1789568690604 } from '../migrations/1789568690604-AddIndexes';
 
 /**
  * Сущности и миграции перечислены явно, а не глобом: глоб вида `*.{ts,js}`
@@ -17,6 +18,7 @@ export const migrations = [
   InitSchema1788895499169,
   AddUserTokenVersion1789132788702,
   AddAvatars1789247071474,
+  AddIndexes1789568690604,
 ];
 
 export const databaseConfig = (
