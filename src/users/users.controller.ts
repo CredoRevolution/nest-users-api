@@ -1,4 +1,12 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import {
+  ClassSerializerInterceptor,
+  Controller,
+  Get,
+  Param,
+  Query,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -16,6 +24,7 @@ import { User } from './entities/user.entity';
 import { IdParamDto } from '../common/dto/id-param.dto';
 import { FindActiveUsersDto } from './dto/find-active-users.dto';
 import { FindActiveUsersResponseDto } from './dto/find-active-users-response.dto';
+import { CacheInterceptor } from '@nestjs/cache-manager';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -28,6 +37,7 @@ export class UsersController {
   constructor(private readonly userService: UsersService) {}
 
   @Get()
+  @UseInterceptors(CacheInterceptor, ClassSerializerInterceptor)
   @ApiOperation({
     summary: 'Список пользователей постранично, с поиском по части логина',
   })
@@ -45,6 +55,7 @@ export class UsersController {
   }
 
   @Get(':id')
+  @UseInterceptors(CacheInterceptor, ClassSerializerInterceptor)
   @ApiOperation({ summary: 'Получить пользователя по id' })
   @ApiOkResponse({ type: User })
   @ApiBadRequestResponse({

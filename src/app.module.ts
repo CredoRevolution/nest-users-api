@@ -8,6 +8,8 @@ import { databaseConfig } from './config/database.config';
 import { AuthModule } from './auth/auth.module';
 import { ProfileModule } from './profile/profile.module';
 import { AvatarsModule } from './avatars/avatars.module';
+import { CacheModule } from '@nestjs/cache-manager';
+import { createKeyv } from '@keyv/redis';
 
 @Module({
   imports: [
@@ -17,6 +19,21 @@ import { AvatarsModule } from './avatars/avatars.module';
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: databaseConfig,
+    }),
+    CacheModule.registerAsync({
+      isGlobal: true,
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: async (config: ConfigService) => {
+        return {
+          stores: [
+            createKeyv(
+              `redis://${config.getOrThrow('REDIS_USERNAME')}:${config.getOrThrow('REDIS_PASSWORD')}@${config.getOrThrow('REDIS_HOST')}:${config.getOrThrow('REDIS_PORT')}`,
+            ),
+          ],
+          ttl: 30 * 1000,
+        };
+      },
     }),
     UsersModule,
     AuthModule,
