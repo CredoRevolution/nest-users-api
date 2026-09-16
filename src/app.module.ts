@@ -29,6 +29,9 @@ import { createKeyv } from '@keyv/redis';
           stores: [
             createKeyv(
               `redis://${config.getOrThrow('REDIS_USERNAME')}:${config.getOrThrow('REDIS_PASSWORD')}@${config.getOrThrow('REDIS_HOST')}:${config.getOrThrow('REDIS_PORT')}`,
+              {
+                connectionTimeout: 1000,
+              },
             ),
           ],
           ttl: 30 * 1000,
