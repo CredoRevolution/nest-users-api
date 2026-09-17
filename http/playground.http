@@ -303,7 +303,110 @@ Authorization: Bearer {{access_token}}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 5. ПРОВЕРКИ, КОТОРЫЕ НЕ АВТОМАТИЗИРУЮТСЯ
+# 5. БАЛАНС И ТРАНЗАКЦИИ
+#
+# Баланс — numeric(12, 2), считает его база: UPDATE balance = balance + :amount.
+# Перевод идёт одной транзакцией, поэтому списание без зачисления невозможно.
+#
+# Как проверить перевод руками:
+#   «Вход dev_violetta» → «Запомнить получателя» → «Вход dev_sasha»
+#   → «Пополнить на 100» → «Перевести получателю 10.01»
+#   → «Баланс» у обоих: у одного −10.01, у другого +10.01
+#
+# Как увидеть откат:
+#   «Пополнить на 100» → «Перевод с падением посреди транзакции» (500)
+#   → «Баланс» не изменился, хотя списание внутри транзакции уже прошло.
+#   В логе приложения видно START TRANSACTION → UPDATE → ROLLBACK.
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Баланс
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{access_token}}
+
+
+### Запомнить получателя — текущий пользователь станет получателем переводов
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+> {%
+    client.global.set("recipient_id", String(response.body.id));
+    client.log(`Получатель переводов: ${response.body.login} (id ${response.body.id})`);
+%}
+
+
+### Пополнить на 100
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "amount": 100
+}
+
+
+### Списать 9.99
+POST {{baseUrl}}/profile/my/balance/withdraw
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "amount": 9.99
+}
+
+
+### Перевести получателю 10.01
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "toUserId": {{recipient_id}},
+  "amount": 10.01
+}
+
+
+### Перевод несуществующему — 404, списание откатывается
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "toUserId": 2147483647,
+  "amount": 10
+}
+
+
+### Перевод больше баланса — 409
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "toUserId": {{recipient_id}},
+  "amount": 1000000
+}
+
+
+### Перевод с падением посреди транзакции — 500, денег никто не теряет
+# Роут /transfer/crash списывает деньги и бросает исключение, не дойдя
+# до зачисления. Существует только вне production.
+POST {{baseUrl}}/profile/my/balance/transfer/crash
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "toUserId": {{recipient_id}},
+  "amount": 10
+}
+
+
+### Баланс после падения — должен быть прежним
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{access_token}}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 6. ПРОВЕРКИ, КОТОРЫЕ НЕ АВТОМАТИЗИРУЮТСЯ
 # ═════════════════════════════════════════════════════════════════════════════
 
 ### Истёкший access-токен — ждём 401

@@ -8,8 +8,11 @@ import { databaseConfig } from './config/database.config';
 import { AuthModule } from './auth/auth.module';
 import { ProfileModule } from './profile/profile.module';
 import { AvatarsModule } from './avatars/avatars.module';
+import { BalanceModule } from './balance/balance.module';
 import { CacheModule } from '@nestjs/cache-manager';
 import { createKeyv } from '@keyv/redis';
+import { DataSource } from 'typeorm';
+import { addTransactionalDataSource } from 'typeorm-transactional';
 
 @Module({
   imports: [
@@ -19,6 +22,15 @@ import { createKeyv } from '@keyv/redis';
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: databaseConfig,
+      dataSourceFactory(options) {
+        if (!options) {
+          throw new Error('Invalid options passed');
+        }
+
+        return Promise.resolve(
+          addTransactionalDataSource(new DataSource(options)),
+        );
+      },
     }),
     CacheModule.registerAsync({
       isGlobal: true,
@@ -42,6 +54,7 @@ import { createKeyv } from '@keyv/redis';
     AuthModule,
     ProfileModule,
     AvatarsModule,
+    BalanceModule,
   ],
   controllers: [AppController],
   providers: [AppService],
