@@ -1,0 +1,350 @@
+###############################################################################
+# PLAYGROUND — ручная проверка по одному запросу.
+#
+# Здесь нет автотестов: жми зелёный треугольник у нужного запроса и смотри
+# ответ. Все запросы ходят от «текущего пользователя»: кто последним сделал
+# register / login / refresh, от того и идут остальные. Кто сейчас текущий,
+# видно во вкладке Response Handler у последнего входа.
+#
+# Переменные, которые файл ведёт сам:
+#   {{access_token}}  {{refresh_token}}  {{user_id}}  {{user_login}}
+#   {{avatar_id}}     — id последней загруженной аватарки
+#
+# У каждого GET в Response Handler пишется X-Cache:
+#   MISS — ответ собран заново и положен в Redis на 30 секунд
+#   HIT  — ответ взят из Redis, до контроллера и базы запрос не дошёл
+#   —    — роут не кэшируется
+###############################################################################
+
+### Сервер живой
+GET {{baseUrl}}/
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 1. СЕССИЯ
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Регистрация dev_sasha — один раз на чистой базе, дальше «Вход dev_sasha»
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{devLogin}}",
+  "email": "{{devEmail}}",
+  "password": "{{devPassword}}",
+  "age": {{devAge}},
+  "about": "dev-пользователь для ручных проверок"
+}
+
+> scripts/save-session.js
+
+
+### Регистрация dev_violetta — второй пользователь, один раз на чистой базе
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{secondLogin}}",
+  "email": "{{secondEmail}}",
+  "password": "{{secondPassword}}",
+  "age": {{secondAge}},
+  "about": "второй dev-пользователь"
+}
+
+> scripts/save-session.js
+
+
+### Вход dev_sasha
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{devLogin}}",
+  "password": "{{devPassword}}"
+}
+
+> scripts/save-session.js
+
+
+### Вход dev_violetta — переключиться на второго пользователя
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{secondLogin}}",
+  "password": "{{secondPassword}}"
+}
+
+> scripts/save-session.js
+
+
+### Новый случайный пользователь
+# @name Новый случайный пользователь
+# Одноразовый: его не жалко удалять и менять ему пароль.
+< {%
+    const login = "pg_" + Date.now();
+    request.variables.set("login", login);
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": {{$random.integer(18, 60)}},
+  "about": "случайный пользователь из playground"
+}
+
+> scripts/save-session.js
+
+
+### Обновить пару токенов (старый refresh после этого мёртв)
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{refresh_token}}"
+}
+
+> scripts/save-session.js
+
+
+### Кто я
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 2. ПРОФИЛЬ
+# Любой PATCH сбрасывает кэш /users/{{user_id}}, но НЕ сбрасывает кэш
+# списка /users — там старые данные живут до конца TTL.
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Поменять about — каждый запуск пишет новое время, удобно ловить кэш
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "about": "обновлено {{$isoTimestamp}}"
+}
+
+
+### Поменять возраст
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "age": {{$random.integer(18, 60)}}
+}
+
+
+### Сменить пароль dev_sasha — все сессии, включая текущую, умирают
+# Дальше: «Вход dev_sasha с временным паролем» → «Вернуть пароль dev_sasha».
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "password": "{{devPassword}}_tmp"
+}
+
+
+### Вход dev_sasha с временным паролем
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{devLogin}}",
+  "password": "{{devPassword}}_tmp"
+}
+
+> scripts/save-session.js
+
+
+### Вернуть пароль dev_sasha — после этого снова «Вход dev_sasha»
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+
+{
+  "password": "{{devPassword}}"
+}
+
+
+### Удалить текущего пользователя — ОСТОРОЖНО
+# Удаление мягкое, логин и email останутся занятыми навсегда. Если удалишь
+# dev_sasha, поменяй devLogin и devEmail в http-client.env.json.
+# Безопаснее сначала сделать «Новый случайный пользователь».
+DELETE {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 3. ПОЛЬЗОВАТЕЛИ И КЭШ
+#
+# Ключ кэша — URL целиком, вместе с query: /users/5, /users?page=2&limit=5.
+# Токен в ключ не входит, поэтому кэш общий для всех пользователей.
+# TTL — 30 секунд (app.module.ts). Ошибки (400, 404) не кэшируются.
+#
+# Сценарий «сброс кэша по id»:
+#   «Пользователь по id» → MISS, ещё раз → HIT,
+#   «Поменять about» → «Пользователь по id» → MISS и новый about.
+#
+# Сценарий «устаревший список»:
+#   «Найти себя в списке» → MISS, «Поменять about» → «Найти себя в списке» →
+#   HIT и СТАРЫЙ about. Через 30 секунд → MISS и новый.
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Пользователь по id — кэшируется
+GET {{baseUrl}}/users/{{user_id}}
+Authorization: Bearer {{access_token}}
+
+> scripts/show-cache.js
+
+
+### Тот же пользователь в обход кэша — у URL другой хвост, значит другой ключ
+# Работает только для /users/:id: у findOne query не валидируется.
+# Для /users лишний параметр даст 400 из-за forbidNonWhitelisted.
+GET {{baseUrl}}/users/{{user_id}}?nocache={{$timestamp}}
+Authorization: Bearer {{access_token}}
+
+> scripts/show-cache.js
+
+
+### Найти себя в списке — кэшируется
+GET {{baseUrl}}/users?login={{user_login}}
+Authorization: Bearer {{access_token}}
+
+> scripts/show-cache.js
+
+
+### Список, первая страница
+GET {{baseUrl}}/users
+Authorization: Bearer {{access_token}}
+
+> scripts/show-cache.js
+
+
+### Список, произвольная страница
+GET {{baseUrl}}/users?page=2&limit=5
+Authorization: Bearer {{access_token}}
+
+> scripts/show-cache.js
+
+
+### Поиск по части логина
+GET {{baseUrl}}/users?login=dev_&limit=20
+Authorization: Bearer {{access_token}}
+
+> scripts/show-cache.js
+
+
+### Активные пользователи — НЕ кэшируются
+# Активный: не удалён, about не пустой, больше двух неудалённых аватарок.
+GET {{baseUrl}}/users/active?minAge=18&maxAge=60
+Authorization: Bearer {{access_token}}
+
+> scripts/show-cache.js
+
+
+### Несуществующий пользователь — 404, в кэш не попадает (всегда MISS)
+GET {{baseUrl}}/users/2147483647
+Authorization: Bearer {{access_token}}
+
+> scripts/show-cache.js
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 4. АВАТАРКИ
+# Нужен запущенный MinIO и созданный бакет (см. README).
+# Максимум 5 неудалённых аватарок, шестая — 409.
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Загрузить PNG
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{access_token}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    if (response.status === 201) client.global.set("avatar_id", String(response.body.id));
+%}
+
+
+### Загрузить JPEG
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{access_token}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/avatar.jpg
+--boundary--
+
+> {%
+    if (response.status === 201) client.global.set("avatar_id", String(response.body.id));
+%}
+
+
+### Удалить последнюю загруженную аватарку
+DELETE {{baseUrl}}/profile/my/avatars/{{avatar_id}}
+Authorization: Bearer {{access_token}}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 5. ПРОВЕРКИ, КОТОРЫЕ НЕ АВТОМАТИЗИРУЮТСЯ
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Истёкший access-токен — ждём 401
+# В .env поставь JWT_ACCESS_EXPIRES=10s, перезапусти приложение, войди,
+# подожди 15 секунд и выполни запрос. Потом верни 15m.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{access_token}}
+
+
+### MinIO лежит — ждём 400 (UploadException), запись в базе не создаётся
+# docker compose stop minio → запрос → docker compose start minio.
+# SDK сначала делает несколько повторов, ответ придёт не сразу.
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{access_token}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+
+### Redis лежит — что будет: 200 из базы, 500 или падение приложения?
+# docker compose stop redis → этот запрос → смотри ответ и лог приложения.
+# Потом docker compose start redis. Хорошее поведение — 200 без кэша.
+GET {{baseUrl}}/users/{{user_id}}
+Authorization: Bearer {{access_token}}
+
+> scripts/show-cache.js
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Заглянуть в Redis руками (из PowerShell):
+#
+#   docker exec -it nest-users-redis redis-cli -a redis_pass
+#
+#   KEYS *                 все закэшированные URL
+#   GET /users/5           что лежит: {"value": ..., "expires": ...}
+#   PTTL /users/5          сколько миллисекунд осталось жить
+#   DEL /users/5           сбросить один ключ
+#   FLUSHALL               сбросить весь кэш
+# ─────────────────────────────────────────────────────────────────────────────

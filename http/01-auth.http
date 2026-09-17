@@ -1,352 +1,605 @@
 ###############################################################################
-# AUTH — регистрация, вход, обновление токенов.
-# Всё, что может пойти не так, тоже здесь: невалидные поля, дубликаты,
-# неверный пароль, чужой секрет, битый токен.
+# AUTH — регистрация, вход, обмен refresh-токена и всё, что может пойти не так.
+#
+# Самодостаточный: создаёт своих пользователей с уникальными логинами,
+# поэтому запускается сколько угодно раз подряд. Запуск — сверху вниз.
 ###############################################################################
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 # РЕГИСТРАЦИЯ
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 
-### Регистрация: основной пользователь (данные из окружения)
+### Регистрация основного пользователя
+# @name Регистрация основного пользователя
+< {%
+    const login = "auth_" + Date.now();
+    request.variables.set("login", login);
+    client.global.set("auth_login", login);
+%}
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "{{userLogin}}",
-  "email": "{{userEmail}}",
-  "password": "{{userPassword}}",
-  "age": {{userAge}},
-  "about": "основной тестовый пользователь"
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 28,
+  "about": "основной пользователь auth-тестов"
 }
 
 > {%
-    client.global.set("access_token", response.body.access_token);
-    client.global.set("refresh_token", response.body.refresh_token);
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.test("в ответе оба токена", () => {
+        client.assert(typeof response.body.access_token === "string", "нет access_token");
+        client.assert(typeof response.body.refresh_token === "string", "нет refresh_token");
+    });
+    client.test("токены разные", () => {
+        client.assert(response.body.access_token !== response.body.refresh_token, "access и refresh совпали");
+    });
+
+    client.global.set("auth_access", response.body.access_token);
+    client.global.set("auth_refresh", response.body.refresh_token);
 %}
 
 
-### Регистрация: второй пользователь (нужен для списка и проверки чужих профилей)
+### Регистрация второго пользователя — нужен, чтобы проверить изоляцию сессий
+# @name Регистрация второго пользователя
+< {%
+    const login = "auth2_" + Date.now();
+    request.variables.set("login", login);
+%}
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "{{secondLogin}}",
-  "email": "{{secondEmail}}",
-  "password": "{{secondPassword}}",
-  "age": {{secondAge}},
-  "about": "второй пользователь"
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 27
 }
 
 > {%
-    client.global.set("second_access_token", response.body.access_token);
-    client.global.set("second_refresh_token", response.body.refresh_token);
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("auth_second_refresh", response.body.refresh_token);
 %}
 
 
-### Регистрация без поля about (оно опциональное) — ожидаем 201
+### Без about — поле необязательное, 201
+# @name Без about
+< {%
+    request.variables.set("login", "noabout_" + Date.now());
+%}
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "no_about_{{$timestamp}}",
-  "email": "no_about_{{$timestamp}}@example.com",
-  "password": "qwerty123",
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
   "age": 33
 }
 
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# РЕГИСТРАЦИЯ — НЕГАТИВНЫЕ СЛУЧАИ
-# ─────────────────────────────────────────────────────────────────────────────
 
-### Дубликат логина — ожидаем 409 Conflict
+### about ровно 1000 символов — граница, 201
+# @name about ровно 1000 символов
+< {%
+    request.variables.set("login", "about1000_" + Date.now());
+    request.variables.set("about", "a".repeat(1000));
+%}
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "{{userLogin}}",
-  "email": "other_{{$timestamp}}@example.com",
-  "password": "qwerty123",
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 33,
+  "about": "{{about}}"
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Дубликаты — 409
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Занятый логин — 409
+# @name Занятый логин
+< {%
+    request.variables.set("email", "other_" + Date.now() + "@example.com");
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{auth_login}}",
+  "email": "{{email}}",
+  "password": "{{password}}",
   "age": 28
 }
 
 > {%
-    client.test("дубликат логина = 409", function () {
-        client.assert(response.status === 409, "ожидали 409, пришло " + response.status);
-    });
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+    client.test("в сообщении про логин", () => client.assert(/login/.test(response.body.message), response.body.message));
 %}
 
 
-### Дубликат email — ожидаем 409 Conflict
+### Занятый email — 409
+# @name Занятый email
+< {%
+    request.variables.set("login", "other_" + Date.now());
+%}
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "other_{{$timestamp}}",
-  "email": "{{userEmail}}",
-  "password": "qwerty123",
-  "age": 29
-}
-
-> {%
-    client.test("дубликат email = 409", function () {
-        client.assert(response.status === 409, "ожидали 409, пришло " + response.status);
-    });
-%}
-
-
-### Кривой email — ожидаем 400 со списком ошибок валидации
-POST {{baseUrl}}/auth/register
-Content-Type: application/json
-
-{
-  "login": "bad_email_{{$timestamp}}",
-  "email": "это-вообще-не-почта",
-  "password": "qwerty123",
+  "login": "{{login}}",
+  "email": "{{auth_login}}@example.com",
+  "password": "{{password}}",
   "age": 28
 }
 
 > {%
-    client.test("кривой email = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
-    });
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+    client.test("в сообщении про email", () => client.assert(/email/.test(response.body.message), response.body.message));
 %}
 
 
-### Пустое тело — ожидаем 400 со всеми обязательными полями в ошибке
+# ─────────────────────────────────────────────────────────────────────────────
+# Валидация тела — 400. До базы такие запросы не доходят, поэтому логины
+# здесь можно не делать уникальными.
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Пустое тело — 400, ошибка по каждому обязательному полю
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {}
 
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+    client.test("перечислены все обязательные поля", () => {
+        const text = response.body.message.join("; ");
+        for (const field of ["login", "email", "password", "age"]) {
+            client.assert(text.includes(`${field} is required`), `нет ошибки про ${field}: ${text}`);
+        }
+    });
+%}
 
-### Лишние поля, которых нет в DTO — ожидаем 400
-# Так работает forbidNonWhitelisted: true из main.ts.
-# Если бы стоял только whitelist: true — было бы 201, а поля молча выкинуло.
+
+### Кривой email — 400
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "extra_{{$timestamp}}",
-  "email": "extra_{{$timestamp}}@example.com",
-  "password": "qwerty123",
+  "login": "bad_email",
+  "email": "это-вообще-не-почта",
+  "password": "{{password}}",
+  "age": 28
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+    client.test("ошибка про email", () => client.assert(response.body.message.includes("email is invalid"), response.body.message));
+%}
+
+
+### Лишние поля — 400 (forbidNonWhitelisted в main.ts)
+# С одним whitelist: true было бы 201, а поля молча выкинуло бы.
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "extra_fields",
+  "email": "extra_fields@example.com",
+  "password": "{{password}}",
   "age": 28,
   "isAdmin": true,
   "passwordHash": "попытка подсунуть свой хэш"
 }
 
 > {%
-    client.test("лишние поля отбиты = 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+    client.test("названы оба лишних поля", () => {
+        const text = response.body.message.join("; ");
+        client.assert(text.includes("isAdmin") && text.includes("passwordHash"), text);
     });
 %}
 
 
-### about длиннее 1000 символов — ожидаем 400
-# Строку ниже размножь копипастой, пока не станет длиннее тысячи символов.
+### about 1001 символ — 400
+# @name about 1001 символ
+< {%
+    request.variables.set("about", "a".repeat(1001));
+%}
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "long_{{$timestamp}}",
-  "email": "long_{{$timestamp}}@example.com",
-  "password": "qwerty123",
+  "login": "long_about",
+  "email": "long_about@example.com",
+  "password": "{{password}}",
   "age": 28,
-  "about": "текст, который надо размножить копипастой до длины больше тысячи символов "
+  "about": "{{about}}"
 }
 
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
-### Возраст строкой вместо числа — посмотри, приведёт ли его transform: true
+
+### Логин из 2 символов — 400 (минимум 3)
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "strage_{{$timestamp}}",
-  "email": "strage_{{$timestamp}}@example.com",
-  "password": "qwerty123",
+  "login": "ab",
+  "email": "short_login@example.com",
+  "password": "{{password}}",
+  "age": 28
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Логин из 41 символа — 400 (максимум 40)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "aaaaaaaaaabbbbbbbbbbccccccccccdddddddddde",
+  "email": "long_login@example.com",
+  "password": "{{password}}",
+  "age": 28
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Пароль из 5 символов — 400 (минимум 6)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "short_pass",
+  "email": "short_pass@example.com",
+  "password": "12345",
+  "age": 28
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Пароль из 21 символа — 400 (максимум 20)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "long_pass",
+  "email": "long_pass@example.com",
+  "password": "123456789012345678901",
+  "age": 28
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Возраст строкой — 400
+# transform: true без enableImplicitConversion строку в число не превращает,
+# а @Type в CreateUserDto нет — @IsInt видит строку.
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "string_age",
+  "email": "string_age@example.com",
+  "password": "{{password}}",
   "age": "28"
 }
 
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
-### Отрицательный возраст — а есть ли вообще проверка?
+
+### Возраст 0 — 400 (@Min(1))
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "negative_{{$timestamp}}",
-  "email": "negative_{{$timestamp}}@example.com",
-  "password": "qwerty123",
+  "login": "zero_age",
+  "email": "zero_age@example.com",
+  "password": "{{password}}",
+  "age": 0
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Отрицательный возраст — 400
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "negative_age",
+  "email": "negative_age@example.com",
+  "password": "{{password}}",
   "age": -5
 }
 
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
-# ─────────────────────────────────────────────────────────────────────────────
+
+### Возраст 151 — 400 (@Max(150))
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "old_age",
+  "email": "old_age@example.com",
+  "password": "{{password}}",
+  "age": 151
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Дробный возраст — 400 (@IsInt)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "float_age",
+  "email": "float_age@example.com",
+  "password": "{{password}}",
+  "age": 28.5
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # ВХОД
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 
-### Вход основным пользователем — ожидаем 200 и новую пару токенов
+### Вход — 200 и новая пара токенов
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
 {
-  "login": "{{userLogin}}",
-  "password": "{{userPassword}}"
+  "login": "{{auth_login}}",
+  "password": "{{password}}"
 }
 
 > {%
-    client.test("вход = 200", function () {
-        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("в ответе оба токена", () => {
+        client.assert(response.body.access_token && response.body.refresh_token, "нет токенов");
     });
-    client.global.set("access_token", response.body.access_token);
-    client.global.set("refresh_token", response.body.refresh_token);
+
+    client.global.set("auth_access", response.body.access_token);
+    client.global.set("auth_refresh", response.body.refresh_token);
 %}
 
 
-### Вход вторым пользователем
+### Неверный пароль — 401
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
 {
-  "login": "{{secondLogin}}",
-  "password": "{{secondPassword}}"
+  "login": "{{auth_login}}",
+  "password": "wrong-password"
 }
 
 > {%
-    client.global.set("second_access_token", response.body.access_token);
-    client.global.set("second_refresh_token", response.body.refresh_token);
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+    client.global.set("auth_wrong_password_message", response.body.message);
 %}
 
 
-### Неверный пароль — ожидаем 401
+### Несуществующий логин — 401 с тем же текстом, что при неверном пароле
+# Если тексты отличаются, перебором можно узнать, какие логины заняты.
+# @name Несуществующий логин
+< {%
+    request.variables.set("login", "nobody_" + Date.now());
+%}
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
 {
-  "login": "{{userLogin}}",
-  "password": "неправильный-пароль"
+  "login": "{{login}}",
+  "password": "{{password}}"
 }
 
 > {%
-    client.test("неверный пароль = 401", function () {
-        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
-    });
-%}
-
-
-### Несуществующий логин — ожидаем 401 с ТЕМ ЖЕ текстом, что и выше
-# Сверь два ответа глазами. Если тексты отличаются — по разнице можно
-# перебором узнать, какие логины зарегистрированы (user enumeration).
-POST {{baseUrl}}/auth/login
-Content-Type: application/json
-
-{
-  "login": "такого-точно-нет-{{$timestamp}}",
-  "password": "qwerty123"
-}
-
-> {%
-    client.test("несуществующий логин = 401", function () {
-        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+    client.test("текст как при неверном пароле", () => {
+        const expected = client.global.get("auth_wrong_password_message");
+        client.assert(response.body.message === expected, `«${response.body.message}» ≠ «${expected}»`);
     });
 %}
 
 
-### Вход без пароля — ожидаем 400 (валидация), а не 401
+### Логин в другом регистре — 401, поиск точный
+# @name Логин в другом регистре
+< {%
+    request.variables.set("login", client.global.get("auth_login").toUpperCase());
+%}
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
 {
-  "login": "{{userLogin}}"
+  "login": "{{login}}",
+  "password": "{{password}}"
 }
 
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
 
-### Вход по email вместо логина — сейчас должно быть 401
-# Проверка того, что findByLogin ищет именно по логину.
+
+### Email вместо логина — 401, вход только по логину
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
 {
-  "login": "{{userEmail}}",
-  "password": "{{userPassword}}"
+  "login": "{{auth_login}}@example.com",
+  "password": "{{password}}"
 }
 
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ОБНОВЛЕНИЕ ТОКЕНОВ
-# ─────────────────────────────────────────────────────────────────────────────
 
-### Refresh: нормальный сценарий
+### Без пароля — 400 (валидация), а не 401
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "login": "{{auth_login}}"
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Пустое тело — 400
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ОБМЕН REFRESH-ТОКЕНА
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Refresh — 200, пара полностью новая
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
 {
-  "refresh_token": "{{refresh_token}}"
+  "refresh_token": "{{auth_refresh}}"
 }
 
 > {%
-    client.test("refresh = 200", function () {
-        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
-    });
-    client.global.set("old_refresh_token", client.global.get("refresh_token"));
-    client.global.set("access_token", response.body.access_token);
-    client.global.set("refresh_token", response.body.refresh_token);
+    const oldRefresh = client.global.get("auth_refresh");
+
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("refresh-токен новый", () => client.assert(response.body.refresh_token !== oldRefresh, "вернулся старый refresh"));
+
+    client.global.set("auth_old_refresh", oldRefresh);
+    client.global.set("auth_access", response.body.access_token);
+    client.global.set("auth_refresh", response.body.refresh_token);
 %}
 
 
-### Refresh СТАРЫМ токеном сразу после ротации — ожидаем 401
-# Повторное использование refresh считается кражей: сервер заодно отзывает
-# ВСЕ refresh-токены пользователя, включая только что выданный.
+### Новый access-токен пускает
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{auth_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("это наш пользователь", () => {
+        client.assert(response.body.login === client.global.get("auth_login"), `login = ${response.body.login}`);
+    });
+%}
+
+
+### Старый refresh повторно — 401
+# Повтор считается кражей: сервер отзывает ВСЕ refresh-токены пользователя.
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
 {
-  "refresh_token": "{{old_refresh_token}}"
+  "refresh_token": "{{auth_old_refresh}}"
 }
 
 > {%
-    client.test("отозванный refresh = 401", function () {
-        client.assert(response.status === 401,
-            "ожидали 401, пришло " + response.status + " — старый токен всё ещё живой");
-    });
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status} — старый токен живой`));
 %}
 
 
-### Новый refresh после попытки кражи тоже мёртв — ожидаем 401
-# Токен получен честно в «нормальном сценарии» выше, но его отозвал предыдущий запрос.
-# Access-токен при этом живёт до истечения, так что 02-profile.http работает дальше.
+### Честно полученный refresh после кражи тоже мёртв — 401
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
 {
-  "refresh_token": "{{refresh_token}}"
+  "refresh_token": "{{auth_refresh}}"
 }
 
 > {%
-    client.test("после кражи отозваны все refresh = 401", function () {
-        client.assert(response.status === 401,
-            "ожидали 401, пришло " + response.status + " — reuse detection не сработал");
-    });
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status} — reuse detection не сработал`));
 %}
 
 
-### В refresh подсунут ACCESS-токен — ожидаем 401
-# Секреты у access и refresh разные, поэтому подпись не сойдётся.
+### Access-токен после кражи работает до своего истечения — 200
+# Отзываются только refresh. Access живёт свои 15 минут, он в базе не хранится.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{auth_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+### Сессия второго пользователя не пострадала — 200
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
 {
-  "refresh_token": "{{access_token}}"
+  "refresh_token": "{{auth_second_refresh}}"
 }
 
 > {%
-    client.test("access вместо refresh = 401", function () {
-        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
-    });
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status} — отозвали чужие сессии`));
 %}
 
 
-### Refresh с выдуманной подписью — ожидаем 401
+### Access-токен вместо refresh — 401 (секреты разные, подпись не сходится)
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{auth_access}}"
+}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Выдуманная подпись — 401
+# По формату это JWT, поэтому @IsJWT пропускает, а проверка подписи — нет.
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
@@ -354,8 +607,12 @@ Content-Type: application/json
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsImxvZ2luIjoic2FzaGEiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTgwMDAwMDAwMH0.podpis-vydumana-i-ne-soydyotsya"
 }
 
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
 
-### Refresh с мусором вместо токена — ожидаем 400 (не проходит @IsJWT), не 401
+
+### Строка не в формате JWT — 400 (@IsJWT), до проверки подписи не доходит
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
@@ -363,23 +620,30 @@ Content-Type: application/json
   "refresh_token": "просто-строка"
 }
 
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
-### Refresh без поля вообще — ожидаем 400
+
+### Число вместо строки — 400
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": 12345
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Без поля — 400
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
 {}
 
-
-### Refresh вторым пользователем — его сессия не должна трогать первую
-POST {{baseUrl}}/auth/refresh
-Content-Type: application/json
-
-{
-  "refresh_token": "{{second_refresh_token}}"
-}
-
 > {%
-    client.global.set("second_access_token", response.body.access_token);
-    client.global.set("second_refresh_token", response.body.refresh_token);
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
 %}

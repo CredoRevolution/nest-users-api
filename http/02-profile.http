@@ -1,163 +1,348 @@
 ###############################################################################
-# PROFILE — /profile/my: чтение, обновление, смена пароля, мягкое удаление.
-# Здесь же проверяется работа JwtAuthGuard: кого пускать, кого нет.
+# PROFILE — /profile/my: чтение, JwtAuthGuard, обновление, смена пароля,
+# мягкое удаление.
 #
-# Перед запуском этого файла хотя бы раз выполни вход из 01-auth.http,
-# иначе переменная access_token будет пустой.
+# Самодостаточный: создаёт своих пользователей с уникальными логинами.
+# Запуск — сверху вниз, блоки со сменой пароля и удалением зависят от порядка.
 ###############################################################################
 
-### Профиль с валидным токеном — ожидаем 200
-GET {{baseUrl}}/profile/my
-Authorization: Bearer {{access_token}}
+### Основной пользователь
+# @name Основной пользователь
+< {%
+    const login = "prof_" + Date.now();
+    request.variables.set("login", login);
+    client.global.set("prof_login", login);
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 28,
+  "about": "основной пользователь profile-тестов"
+}
 
 > {%
-    client.test("профиль отдался", function () {
-        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
-    });
-    client.test("passwordHash отсутствует", function () {
-        client.assert(response.body.passwordHash === undefined,
-            "ХЭШ ПАРОЛЯ УЕХАЛ КЛИЕНТУ — сломана сериализация");
-    });
-    client.test("все поля профиля на месте", function () {
-        client.assert(response.body.id !== undefined, "нет id");
-        client.assert(response.body.login !== undefined, "нет login");
-        client.assert(response.body.email !== undefined, "нет email");
-        client.assert(response.body.age !== undefined, "нет age");
-    });
-    client.global.set("my_id", response.body.id);
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("prof_access", response.body.access_token);
+    client.global.set("prof_refresh", response.body.refresh_token);
 %}
 
 
-### Профиль второго пользователя по его токену — должен прийти ДРУГОЙ профиль
-# Доказательство того, что id берётся из токена, а не откуда-то ещё.
-GET {{baseUrl}}/profile/my
-Authorization: Bearer {{second_access_token}}
+### Второй пользователь — его логин и email попробуем занять
+# @name Второй пользователь
+< {%
+    const login = "prof2_" + Date.now();
+    request.variables.set("login", login);
+    client.global.set("prof_other_login", login);
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 27
+}
 
 > {%
-    client.test("пришёл другой пользователь", function () {
-        client.assert(response.body.id !== client.global.get("my_id"),
-            "оба токена вернули один и тот же профиль");
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("prof_other_access", response.body.access_token);
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ЧТЕНИЕ
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Свой профиль — 200
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("все поля профиля на месте", () => {
+        const body = response.body;
+        client.assert(body.login === client.global.get("prof_login"), `login = ${body.login}`);
+        client.assert(body.email === `${client.global.get("prof_login")}@example.com`, `email = ${body.email}`);
+        client.assert(body.age === 28, `age = ${body.age}`);
+        client.assert(body.about === "основной пользователь profile-тестов", `about = ${body.about}`);
+        client.assert(Number.isInteger(body.id), `id = ${body.id}`);
     });
-    client.global.set("second_id", response.body.id);
+    client.test("служебные поля наружу не уходят", () => {
+        for (const field of ["password", "passwordHash", "tokenVersion", "deletedAt"]) {
+            client.assert(!(field in response.body), `в ответе есть ${field}`);
+        }
+    });
+
+    client.global.set("prof_id", String(response.body.id));
+%}
+
+
+### Профиль по токену второго — другой пользователь
+# id берётся из токена, а не откуда-то ещё.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_other_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("пришёл второй пользователь", () => {
+        client.assert(response.body.login === client.global.get("prof_other_login"), `login = ${response.body.login}`);
+    });
 %}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# НЕГАТИВНЫЕ СЛУЧАИ — всё это должно давать 401
+# JwtAuthGuard — всё это 401
 # ─────────────────────────────────────────────────────────────────────────────
 
-### Совсем без заголовка Authorization — ожидаем 401
+### Без заголовка Authorization — 401
 GET {{baseUrl}}/profile/my
 
 > {%
-    client.test("без токена = 401", function () {
-        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+    client.test("сообщение про отсутствующий токен", () => {
+        client.assert(response.body.message === "Access token is required", response.body.message);
     });
 %}
 
 
-### Пустой заголовок Authorization — ожидаем 401
+### Пустой Authorization — 401
 GET {{baseUrl}}/profile/my
 Authorization:
 
-
-### Токен без слова Bearer — ожидаем 401
-# Проверяет ту самую строку extractTokenFromHeader, где сверяется type === 'Bearer'.
-GET {{baseUrl}}/profile/my
-Authorization: {{access_token}}
-
 > {%
-    client.test("без схемы Bearer = 401", function () {
-        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
-    });
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
 %}
 
 
-### Другая схема авторизации вместо Bearer — ожидаем 401
+### Токен без слова Bearer — 401
 GET {{baseUrl}}/profile/my
-Authorization: Basic {{access_token}}
+Authorization: {{prof_access}}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
 
 
-### Схема написана строчными буквами — ожидаем 401
-# Сравнение в коде регистрозависимое. Так и должно быть или нет — решай сам,
-# но знай, как оно себя ведёт.
+### Схема Basic вместо Bearer — 401
 GET {{baseUrl}}/profile/my
-Authorization: bearer {{access_token}}
+Authorization: Basic {{prof_access}}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
 
 
-### Мусор вместо токена — ожидаем 401
+### Схема строчными буквами — 401
+# Сравнение в extractTokenFromHeader регистрозависимое. По RFC 7235 схема
+# регистронезависима, так что клиент с «bearer» формально прав.
+GET {{baseUrl}}/profile/my
+Authorization: bearer {{prof_access}}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Мусор вместо токена — 401
 GET {{baseUrl}}/profile/my
 Authorization: Bearer это-не-токен
 
 > {%
-    client.test("мусор вместо токена = 401", function () {
-        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
-    });
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
 %}
 
 
-### Токен с испорченной подписью — ожидаем 401
-# Тело токена читается кем угодно, но подделать его нельзя: подпись не сойдётся.
+### Выдуманная подпись — 401
 GET {{baseUrl}}/profile/my
 Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsImxvZ2luIjoic2FzaGEiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTgwMDAwMDAwMH0.podpis-vydumana-i-ne-soydyotsya
 
-
-### REFRESH-токен вместо access — ожидаем 401
-# Разные секреты как раз для этого: refresh не должен открывать защищённые роуты.
-GET {{baseUrl}}/profile/my
-Authorization: Bearer {{refresh_token}}
-
 > {%
-    client.test("refresh не работает как access = 401", function () {
-        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
-    });
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
 %}
 
 
-### Просроченный access-токен — ожидаем 401
-# Как проверить: поставь в .env JWT_ACCESS_EXPIRES=10s, перезапусти приложение,
-# залогинься, подожди 15 секунд и выполни этот запрос. Потом верни 15m обратно.
+### Refresh-токен вместо access — 401
 GET {{baseUrl}}/profile/my
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{prof_refresh}}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ОБНОВЛЕНИЕ ПРОФИЛЯ И МЯГКОЕ УДАЛЕНИЕ
-# PATCH /profile/my и DELETE /profile/my.
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# ОБНОВЛЕНИЕ
+# ═════════════════════════════════════════════════════════════════════════════
 
-### Обновление своего профиля
+### Обновить about — 200, остальные поля не тронуты
 PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
 Content-Type: application/json
-Authorization: Bearer {{access_token}}
 
 {
   "about": "обновлённое описание"
 }
 
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("about обновился", () => client.assert(response.body.about === "обновлённое описание", response.body.about));
+    client.test("остальное как было", () => {
+        client.assert(response.body.login === client.global.get("prof_login"), `login = ${response.body.login}`);
+        client.assert(response.body.age === 28, `age = ${response.body.age}`);
+    });
+    client.test("служебные поля наружу не уходят", () => {
+        for (const field of ["passwordHash", "tokenVersion", "deletedAt"]) {
+            client.assert(!(field in response.body), `в ответе есть ${field}`);
+        }
+    });
+%}
 
-### Обновление возраста
+
+### Обновить возраст — 200
 PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
 Content-Type: application/json
-Authorization: Bearer {{access_token}}
 
 {
   "age": 29
 }
 
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("age обновился", () => client.assert(response.body.age === 29, `age = ${response.body.age}`));
+%}
 
-### Попытка обновить поле, которое менять нельзя — ожидаем 400
+
+### Изменения сохранились в базе
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+
+> {%
+    client.test("about и age из базы новые", () => {
+        client.assert(response.body.about === "обновлённое описание", `about = ${response.body.about}`);
+        client.assert(response.body.age === 29, `age = ${response.body.age}`);
+    });
+%}
+
+
+### Пустое тело — 200, ничего не меняется
 PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
 Content-Type: application/json
-Authorization: Bearer {{access_token}}
+
+{}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("данные прежние", () => client.assert(response.body.age === 29, `age = ${response.body.age}`));
+%}
+
+
+### Свой же логин — 200, это не конфликт
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+Content-Type: application/json
+
+{
+  "login": "{{prof_login}}"
+}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+### Логин второго пользователя — 409
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+Content-Type: application/json
+
+{
+  "login": "{{prof_other_login}}"
+}
+
+> {%
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+%}
+
+
+### Email второго пользователя — 409
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+Content-Type: application/json
+
+{
+  "email": "{{prof_other_login}}@example.com"
+}
+
+> {%
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+%}
+
+
+### Поля, которых нет в DTO — 400
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+Content-Type: application/json
 
 {
   "passwordHash": "подмена",
   "id": 999
 }
 
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
-### Обновление без токена — ожидаем 401
+
+### Невалидный возраст — 400
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+Content-Type: application/json
+
+{
+  "age": 0
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Кривой email — 400
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+Content-Type: application/json
+
+{
+  "email": "не-почта"
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Короткий пароль — 400, сессии не трогаются
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+Content-Type: application/json
+
+{
+  "password": "123"
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Без токена — 401
 PATCH {{baseUrl}}/profile/my
 Content-Type: application/json
 
@@ -165,159 +350,202 @@ Content-Type: application/json
   "about": "без токена"
 }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# СМЕНА ПАРОЛЯ — завершает все сессии, включая текущую.
-# Делается на одноразовом пользователе, чтобы пароль sasha из окружения
-# остался прежним и остальные файлы продолжали работать.
-# Запускай запросы этого блока по порядку.
-# ─────────────────────────────────────────────────────────────────────────────
-
-### Одноразовый пользователь для смены пароля
-POST {{baseUrl}}/auth/register
-Content-Type: application/json
-
-{
-  "login": "pw_change_{{$timestamp}}",
-  "email": "pw_change_{{$timestamp}}@example.com",
-  "password": "qwerty123",
-  "age": 30
-}
-
 > {%
-    client.global.set("pw_access_token", response.body.access_token);
-    client.global.set("pw_refresh_token", response.body.refresh_token);
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
 %}
 
 
-### Запоминаем его логин — понадобится для входа с новым паролем
-GET {{baseUrl}}/profile/my
-Authorization: Bearer {{pw_access_token}}
+# ═════════════════════════════════════════════════════════════════════════════
+# СМЕНА ПАРОЛЯ — завершает все сессии, включая текущую
+# ═════════════════════════════════════════════════════════════════════════════
 
-> {%
-    client.global.set("pw_login", response.body.login);
-%}
-
-
-### Смена пароля — ожидаем 200 и обновлённый профиль
+### Сменить пароль — 200
 PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
 Content-Type: application/json
-Authorization: Bearer {{pw_access_token}}
 
 {
-  "password": "newpassword123"
+  "password": "{{password}}_new"
 }
 
 > {%
-    client.test("пароль сменён = 200", function () {
-        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
-    });
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("пароль в ответ не попал", () => client.assert(!("password" in response.body), "в ответе есть password"));
 %}
 
 
-### Access-токен, выданный до смены пароля — ожидаем 401
-# Токен ещё не истёк и подпись верная, но версия сессий в нём старая.
+### Access, выданный до смены пароля — 401
+# Токен не истёк и подпись верная, но tokenVersion в нём уже старый.
 GET {{baseUrl}}/profile/my
-Authorization: Bearer {{pw_access_token}}
+Authorization: Bearer {{prof_access}}
 
 > {%
-    client.test("старый access после смены пароля = 401", function () {
-        client.assert(response.status === 401,
-            "ожидали 401, пришло " + response.status + " — старые сессии не отозваны");
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status} — старые сессии не отозваны`));
+    client.test("сообщение про отозванную сессию", () => {
+        client.assert(response.body.message === "Session has been revoked", response.body.message);
     });
 %}
 
 
-### Refresh-токен, выданный до смены пароля — ожидаем 401
+### Refresh, выданный до смены пароля — 401
 POST {{baseUrl}}/auth/refresh
 Content-Type: application/json
 
 {
-  "refresh_token": "{{pw_refresh_token}}"
+  "refresh_token": "{{prof_refresh}}"
 }
 
 > {%
-    client.test("старый refresh после смены пароля = 401", function () {
-        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
-    });
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
 %}
 
 
-### Вход со СТАРЫМ паролем — ожидаем 401
+### Вход со старым паролем — 401
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
 {
-  "login": "{{pw_login}}",
-  "password": "qwerty123"
+  "login": "{{prof_login}}",
+  "password": "{{password}}"
 }
 
 > {%
-    client.test("старый пароль не подходит = 401", function () {
-        client.assert(response.status === 401, "ожидали 401, пришло " + response.status);
-    });
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
 %}
 
 
-### Вход с НОВЫМ паролем — ожидаем 200, и новый access снова пускает
+### Вход с новым паролем — 200
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
 {
-  "login": "{{pw_login}}",
-  "password": "newpassword123"
+  "login": "{{prof_login}}",
+  "password": "{{password}}_new"
 }
 
 > {%
-    client.test("новый пароль подходит = 200", function () {
-        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
-    });
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.global.set("prof_access", response.body.access_token);
+    client.global.set("prof_refresh", response.body.refresh_token);
 %}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# МЯГКОЕ УДАЛЕНИЕ — выполняй последним: после него токены sasha больше
-# не работают, а 03-users.http ходит под вторым пользователем.
-# ─────────────────────────────────────────────────────────────────────────────
-
-### Мягкое удаление своего аккаунта — ожидаем 204
-DELETE {{baseUrl}}/profile/my
-Authorization: Bearer {{access_token}}
-
-
-### Профиль после удаления — ожидаем 401
-# Токен не истёк и подпись верная, но гвард на каждом запросе проверяет
-# в базе, что пользователь существует, и удалённого не пускает.
+### Новый access пускает — 200
 GET {{baseUrl}}/profile/my
-Authorization: Bearer {{access_token}}
+Authorization: Bearer {{prof_access}}
 
 > {%
-    client.test("удалённого пользователя не пускает = 401", function () {
-        client.assert(response.status === 401,
-            "ожидали 401, пришло " + response.status + " — токен удалённого всё ещё работает");
-    });
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
 %}
 
 
-### Вход удалённым пользователем — ожидаем 401
+### Сессия второго пользователя не пострадала — 200
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_other_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# МЯГКОЕ УДАЛЕНИЕ — в самом конце, после него токены пользователя мертвы
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Удалить свой аккаунт — 204 без тела
+DELETE {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+
+> {%
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
+    client.test("тело пустое", () => client.assert(!response.body, `пришло ${response.body}`));
+%}
+
+
+### Профиль после удаления — 401
+# Гвард на каждом запросе ищет пользователя в базе, удалённого не находит.
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{prof_access}}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+    client.test("сообщение про пользователя", () => client.assert(response.body.message === "User not found", response.body.message));
+%}
+
+
+### Refresh после удаления — 401, сессии отозваны
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "{{prof_refresh}}"
+}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Вход удалённым — 401
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
 {
-  "login": "{{userLogin}}",
-  "password": "{{userPassword}}"
+  "login": "{{prof_login}}",
+  "password": "{{password}}_new"
 }
 
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
 
-### Повторная регистрация с логином удалённого пользователя
-# Интересный вопрос: логин занят навсегда или освобождается? Уникальный индекс
-# в базе останется, строка-то никуда не делась. Проверь и будь готов ответить.
+
+### Удалённый не виден через /users/:id — 404
+GET {{baseUrl}}/users/{{prof_id}}
+Authorization: Bearer {{prof_other_access}}
+
+> {%
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status}`));
+%}
+
+
+### Регистрация с логином удалённого — 409
+# Строка в таблице осталась, existsByLogin ищет с withDeleted: true.
+# Логин и email заняты навсегда.
+# @name Регистрация с логином удалённого
+< {%
+    request.variables.set("email", "reuse_" + Date.now() + "@example.com");
+%}
 POST {{baseUrl}}/auth/register
 Content-Type: application/json
 
 {
-  "login": "{{userLogin}}",
-  "email": "{{userEmail}}",
-  "password": "{{userPassword}}",
+  "login": "{{prof_login}}",
+  "email": "{{email}}",
+  "password": "{{password}}",
   "age": 28
 }
+
+> {%
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+%}
+
+
+### Регистрация с email удалённого — 409
+# @name Регистрация с email удалённого
+< {%
+    request.variables.set("login", "reuse_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{prof_login}}@example.com",
+  "password": "{{password}}",
+  "age": 28
+}
+
+> {%
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+%}

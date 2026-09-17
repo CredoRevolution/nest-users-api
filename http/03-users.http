@@ -1,381 +1,511 @@
 ###############################################################################
-# USERS — список пользователей, только для авторизованных.
+# USERS — GET /users (пагинация, поиск по логину) и GET /users/:id.
 #
-# GET /users?page=1&limit=10&login=sas
-# Любой другой query-параметр даст 400: ValidationPipe отбрасывает всё,
-# чего нет в FindUsersDto.
+# Самодостаточный. Создаёт четырёх пользователей с общим уникальным
+# префиксом {{users_prefix}}:
+#   <префикс>_a  <префикс>_b  <префикс>_c  <префикс>za
+# и дальше ищет по этому префиксу — так результат не зависит от того,
+# сколько ещё пользователей лежит в базе.
 #
-# Запросы идут от второго пользователя (second_access_token): основной
-# удаляется в конце 02-profile.http, и его токен гвард больше не пускает.
-# Перед запуском выполни 01-auth.http, а для запросов по id — ещё и 02-profile.http.
+# Оба роута кэшируются на 30 секунд, ключ — URL. Поэтому каждый запрос,
+# который проверяет содержимое, ходит на свой уникальный URL.
+# Сам кэш проверяется в 07-cache.http.
 ###############################################################################
 
-### Список без токена — ожидаем 401
+### Пользователь A — от его имени идут все запросы
+# @name Пользователь A
+< {%
+    const prefix = "usr" + Date.now();
+    client.global.set("users_prefix", prefix);
+    request.variables.set("login", prefix + "_a");
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 20,
+  "about": "пользователь A"
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("users_access", response.body.access_token);
+%}
+
+
+### Пользователь B
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{users_prefix}}_b",
+  "email": "{{users_prefix}}_b@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### Пользователь C — его удалим
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{users_prefix}}_c",
+  "email": "{{users_prefix}}_c@example.com",
+  "password": "{{password}}",
+  "age": 40
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("users_c_access", response.body.access_token);
+%}
+
+
+### Пользователь «za» — ловушка для «_» как подстановочного символа LIKE
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{users_prefix}}za",
+  "email": "{{users_prefix}}za@example.com",
+  "password": "{{password}}",
+  "age": 50
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# СПИСОК
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Без токена — 401
 GET {{baseUrl}}/users
 
 > {%
-    client.test("список закрыт для неавторизованных", function () {
-        client.assert(response.status === 401,
-            "ожидали 401, пришло " + response.status);
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Параметры по умолчанию — page 1, limit 10
+GET {{baseUrl}}/users
+Authorization: Bearer {{users_access}}
+
+> {%
+    const {data, meta} = response.body;
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("meta по умолчанию", () => {
+        client.assert(meta.page === 1 && meta.limit === 10, JSON.stringify(meta));
+        client.assert(meta.totalPages === Math.ceil(meta.total / meta.limit), JSON.stringify(meta));
+    });
+    client.test("не больше 10 записей", () => client.assert(data.length <= 10, `пришло ${data.length}`));
+    client.test("служебные поля наружу не уходят", () => {
+        for (const user of data) {
+            for (const field of ["passwordHash", "tokenVersion", "deletedAt"]) {
+                client.assert(!(field in user), `у ${user.login} есть ${field}`);
+            }
+        }
+    });
+    client.test("отсортировано по id", () => {
+        for (let i = 1; i < data.length; i++) {
+            client.assert(data[i - 1].id < data[i].id, `id ${data[i - 1].id} идёт перед ${data[i].id}`);
+        }
     });
 %}
 
 
-### Список с токеном, параметры по умолчанию
-GET {{baseUrl}}/users
-Authorization: Bearer {{second_access_token}}
+### Поиск по префиксу — все четверо
+GET {{baseUrl}}/users?login={{users_prefix}}
+Authorization: Bearer {{users_access}}
+
+> {%
+    const prefix = client.global.get("users_prefix");
+    const logins = response.body.data.map(user => user.login);
+
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("нашлись ровно наши четверо", () => {
+        const expected = [`${prefix}_a`, `${prefix}_b`, `${prefix}_c`, `${prefix}za`];
+        client.assert(JSON.stringify(logins) === JSON.stringify(expected), `пришло ${logins}`);
+        client.assert(response.body.meta.total === 4, `total = ${response.body.meta.total}`);
+    });
+
+    const byLogin = Object.fromEntries(response.body.data.map(user => [user.login, user]));
+    client.global.set("users_a_id", String(byLogin[`${prefix}_a`].id));
+    client.global.set("users_c_id", String(byLogin[`${prefix}_c`].id));
+%}
 
 
-### Первая страница, по 10 записей
-GET {{baseUrl}}/users?page=1&limit=10
-Authorization: Bearer {{second_access_token}}
+### Поиск по середине логина — ищется подстрока, а не только начало
+# @name Поиск по середине логина
+< {%
+    request.variables.set("part", client.global.get("users_prefix").slice(3));
+%}
+GET {{baseUrl}}/users?login={{part}}
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("нашлись все четверо", () => client.assert(response.body.meta.total === 4, `total = ${response.body.meta.total}`));
+%}
 
 
-### Вторая страница
-GET {{baseUrl}}/users?page=2&limit=10
-Authorization: Bearer {{second_access_token}}
+### Поиск в верхнем регистре — ILIKE, регистр не важен
+# @name Поиск в верхнем регистре
+< {%
+    request.variables.set("upper", client.global.get("users_prefix").toUpperCase());
+%}
+GET {{baseUrl}}/users?login={{upper}}
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("нашлись все четверо", () => client.assert(response.body.meta.total === 4, `total = ${response.body.meta.total}`));
+%}
 
 
-### Страница за пределами данных — ожидаем пустой массив, не ошибку
-GET {{baseUrl}}/users?page=9999&limit=10
-Authorization: Bearer {{second_access_token}}
+### «_» ищется буквально, а не как «любой символ» — трое без «za»
+GET {{baseUrl}}/users?login={{users_prefix}}_
+Authorization: Bearer {{users_access}}
+
+> {%
+    const logins = response.body.data.map(user => user.login);
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("za не попал", () => {
+        client.assert(response.body.meta.total === 3, `пришло ${logins} — «_» не экранирован в escapeLike`);
+    });
+%}
 
 
-### limit = 1 — самая маленькая страница
-GET {{baseUrl}}/users?page=1&limit=1
-Authorization: Bearer {{second_access_token}}
+### «%» ищется буквально, а не как «что угодно» — пусто
+# %25 — это закодированный «%».
+GET {{baseUrl}}/users?login={{users_prefix}}%25a
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("никого", () => {
+        const logins = response.body.data.map(user => user.login);
+        client.assert(response.body.meta.total === 0, `пришло ${logins} — «%» не экранирован в escapeLike`);
+    });
+%}
 
 
-### Отрицательная страница — ожидаем 400
-GET {{baseUrl}}/users?page=-1&limit=10
-Authorization: Bearer {{second_access_token}}
+### Попытка SQL-инъекции — 200, ищется как обычная строка
+# Значение: ' OR 1=1 --
+GET {{baseUrl}}/users?login=%27%20OR%201%3D1%20--
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("вернулись только логины с этой подстрокой", () => {
+        for (const user of response.body.data) {
+            client.assert(user.login.includes("' OR 1=1 --"), `лишний пользователь ${user.login}`);
+        }
+    });
+%}
 
 
-### page = 0 — ожидаем 400 (страницы нумеруются с единицы)
-GET {{baseUrl}}/users?page=0&limit=10
-Authorization: Bearer {{second_access_token}}
+### Под фильтр никто не подходит — пустой список
+GET {{baseUrl}}/users?login={{users_prefix}}_nobody
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("пусто", () => {
+        const {data, meta} = response.body;
+        client.assert(data.length === 0 && meta.total === 0 && meta.totalPages === 0, JSON.stringify(response.body));
+    });
+%}
 
 
-### limit = 0 — ожидаем 400
-GET {{baseUrl}}/users?page=1&limit=0
-Authorization: Bearer {{second_access_token}}
+# ─────────────────────────────────────────────────────────────────────────────
+# Пагинация на наших четверых
+# ─────────────────────────────────────────────────────────────────────────────
+
+### Страница 1 по 3 — трое, всего 2 страницы
+GET {{baseUrl}}/users?login={{users_prefix}}&page=1&limit=3
+Authorization: Bearer {{users_access}}
+
+> {%
+    const prefix = client.global.get("users_prefix");
+    const {data, meta} = response.body;
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("первые трое по id", () => {
+        const logins = data.map(user => user.login);
+        client.assert(JSON.stringify(logins) === JSON.stringify([`${prefix}_a`, `${prefix}_b`, `${prefix}_c`]), `пришло ${logins}`);
+    });
+    client.test("meta", () => {
+        client.assert(meta.page === 1 && meta.limit === 3 && meta.total === 4 && meta.totalPages === 2, JSON.stringify(meta));
+    });
+%}
 
 
-### Огромный limit — должен упереться в потолок, а не отдать всю базу
-# Без верхней границы limit=999999 положит и базу, и приложение.
-# Именно ради этого пагинация и делается.
-GET {{baseUrl}}/users?page=1&limit=999999
-Authorization: Bearer {{second_access_token}}
+### Страница 2 по 3 — один оставшийся
+GET {{baseUrl}}/users?login={{users_prefix}}&page=2&limit=3
+Authorization: Bearer {{users_access}}
+
+> {%
+    const {data, meta} = response.body;
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("только za", () => {
+        client.assert(data.length === 1 && data[0].login === `${client.global.get("users_prefix")}za`, JSON.stringify(data));
+    });
+    client.test("meta.page = 2", () => client.assert(meta.page === 2, JSON.stringify(meta)));
+%}
 
 
-### page буквами вместо числа — ожидаем 400
-GET {{baseUrl}}/users?page=abc&limit=10
-Authorization: Bearer {{second_access_token}}
+### Страница за пределами — 200 и пустой data, total прежний
+GET {{baseUrl}}/users?login={{users_prefix}}&page=3&limit=3
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("data пустой, total = 4", () => {
+        client.assert(response.body.data.length === 0 && response.body.meta.total === 4, JSON.stringify(response.body.meta));
+    });
+%}
 
 
-### Фильтр по логину целиком
-GET {{baseUrl}}/users?login={{userLogin}}
-Authorization: Bearer {{second_access_token}}
+### limit = 1
+GET {{baseUrl}}/users?login={{users_prefix}}&page=1&limit=1
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("одна запись, 4 страницы", () => {
+        client.assert(response.body.data.length === 1 && response.body.meta.totalPages === 4, JSON.stringify(response.body.meta));
+    });
+%}
 
 
-### Фильтр по куску логина — поиск должен быть частичным
-GET {{baseUrl}}/users?login=sas
-Authorization: Bearer {{second_access_token}}
+### limit = 100 — граница, 200
+GET {{baseUrl}}/users?page=1&limit=100
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("не больше 100 записей", () => client.assert(response.body.data.length <= 100, `пришло ${response.body.data.length}`));
+%}
 
 
-### Фильтр в другом регистре — ILIKE, регистр не важен
-GET {{baseUrl}}/users?login=SAS
-Authorization: Bearer {{second_access_token}}
+# ─────────────────────────────────────────────────────────────────────────────
+# Валидация query — 400
+# ─────────────────────────────────────────────────────────────────────────────
+
+### limit = 101 — 400 (@Max(100)), всю базу разом не отдаём
+GET {{baseUrl}}/users?limit=101
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
 
-### Фильтр, под который никто не подходит — ожидаем пустой массив
-GET {{baseUrl}}/users?login=ябсдорфщ
-Authorization: Bearer {{second_access_token}}
+### limit = 999999 — 400
+GET {{baseUrl}}/users?limit=999999
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
 
-### Фильтр вместе с пагинацией
-GET {{baseUrl}}/users?login=sas&page=1&limit=5
-Authorization: Bearer {{second_access_token}}
+### limit = 0 — 400
+GET {{baseUrl}}/users?limit=0
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
 
-### Спецсимволы в фильтре: символ % в LIKE значит «что угодно»
-# Значение уходит в базу параметром, но шаблон LIKE внутри значения всё равно
-# работает — поэтому % и _ экранируются в escapeLike(). Ожидаем пустой список.
-GET {{baseUrl}}/users?login=%25
-Authorization: Bearer {{second_access_token}}
+### page = 0 — 400, страницы с единицы
+GET {{baseUrl}}/users?page=0
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
 
-### Попытка SQL-инъекции в фильтре — ожидаем пустой результат, а не падение
-# Если сломается — значит значение склеивается в SQL строкой. Это ровно та тема,
-# которую спрашивают на блоке БД.
-GET {{baseUrl}}/users?login=' OR 1=1 --
-Authorization: Bearer {{second_access_token}}
+### page = -1 — 400
+GET {{baseUrl}}/users?page=-1
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
 
 
-### Сортировка не реализована: параметра sortBy нет в DTO — ожидаем 400
-# Если делать сортировку, имя колонки нельзя передать в базу параметром,
-# его придётся подставлять в текст запроса — и проверять по белому списку.
+### page буквами — 400
+GET {{baseUrl}}/users?page=abc
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### page дробный — 400
+GET {{baseUrl}}/users?page=1.5
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### login длиннее 40 — 400
+GET {{baseUrl}}/users?login=aaaaaaaaaabbbbbbbbbbccccccccccdddddddddde
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Неизвестный параметр — 400 (forbidNonWhitelisted)
+# Сортировки нет. Если её делать, имя колонки параметром в SQL не передать —
+# только подставлять в текст запроса после проверки по белому списку.
 GET {{baseUrl}}/users?sortBy=passwordHash&order=ASC
-Authorization: Bearer {{second_access_token}}
-
-
-### Ещё один неизвестный параметр — ожидаем 400
-GET {{baseUrl}}/users?sortBy=такой-колонки-нет
-Authorization: Bearer {{second_access_token}}
-
-
-### Мягко удалённый пользователь не должен появляться в списке
-# Выполни после DELETE из 02-profile.http и поищи удалённого по логину.
-GET {{baseUrl}}/users?login={{userLogin}}
-Authorization: Bearer {{second_access_token}}
-
-
-### Один пользователь по идентификатору
-GET {{baseUrl}}/users/{{second_id}}
-Authorization: Bearer {{second_access_token}}
-
-
-### Мягко удалённый пользователь по идентификатору — ожидаем 404
-# my_id — это sasha, удалённый в конце 02-profile.http.
-GET {{baseUrl}}/users/{{my_id}}
-Authorization: Bearer {{second_access_token}}
+Authorization: Bearer {{users_access}}
 
 > {%
-    client.test("удалённый пользователь не находится = 404", function () {
-        client.assert(response.status === 404, "ожидали 404, пришло " + response.status);
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ПОЛЬЗОВАТЕЛЬ ПО ID
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Существующий — 200
+GET {{baseUrl}}/users/{{users_a_id}}
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("это пользователь A", () => {
+        const body = response.body;
+        client.assert(String(body.id) === client.global.get("users_a_id"), `id = ${body.id}`);
+        client.assert(body.login === `${client.global.get("users_prefix")}_a`, `login = ${body.login}`);
+        client.assert(body.age === 20 && body.about === "пользователь A", JSON.stringify(body));
+    });
+    client.test("служебные поля наружу не уходят", () => {
+        for (const field of ["passwordHash", "tokenVersion", "deletedAt"]) {
+            client.assert(!(field in response.body), `в ответе есть ${field}`);
+        }
     });
 %}
 
 
-### Несуществующий идентификатор — ожидаем 404, а не 200 с пустотой
-GET {{baseUrl}}/users/999999
-Authorization: Bearer {{second_access_token}}
+### Без токена — 401
+GET {{baseUrl}}/users/{{users_a_id}}
 
 > {%
-    client.test("несуществующий id = 404", function () {
-        client.assert(response.status === 404, "ожидали 404, пришло " + response.status);
-    });
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
 %}
 
 
-### Идентификатор буквами — ожидаем 400
-GET {{baseUrl}}/users/abc
-Authorization: Bearer {{second_access_token}}
-
-> {%
-    client.test("id = abc → 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
-    });
-%}
-
-
-### Ноль — ожидаем 400 (@Min(1) в IdParamDto)
-GET {{baseUrl}}/users/0
-Authorization: Bearer {{second_access_token}}
-
-> {%
-    client.test("id = 0 → 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
-    });
-%}
-
-
-### Максимальный integer — id корректный, но такого пользователя нет — ожидаем 404
+### Такого нет — 404
 GET {{baseUrl}}/users/2147483647
-Authorization: Bearer {{second_access_token}}
+Authorization: Bearer {{users_access}}
 
 > {%
-    client.test("id = 2147483647 → 404", function () {
-        client.assert(response.status === 404, "ожидали 404, пришло " + response.status);
-    });
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status}`));
 %}
 
 
-### На единицу больше integer — ожидаем 400 (@Max в IdParamDto), а не 500
-# Колонка users.id — SERIAL, то есть integer. Раньше ParseIntPipe такое число
-# пропускал, Postgres падал с "value out of range", и наружу уходил 500.
+### id буквами — 400
+GET {{baseUrl}}/users/abc
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### id дробный — 400
+GET {{baseUrl}}/users/1.5
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### id = 0 — 400 (@Min(1))
+GET {{baseUrl}}/users/0
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### id = -1 — 400
+GET {{baseUrl}}/users/-1
+Authorization: Bearer {{users_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### id больше integer — 400, а не 500
+# Колонка id — SERIAL (integer). Без @Max в IdParamDto Postgres упал бы
+# с "value out of range" и наружу ушёл бы 500.
 GET {{baseUrl}}/users/2147483648
-Authorization: Bearer {{second_access_token}}
+Authorization: Bearer {{users_access}}
 
 > {%
-    client.test("id больше integer → 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
-    });
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
 %}
 
 
-###############################################################################
-# ACTIVE USERS — активные пользователи в диапазоне возраста.
-#
-# GET /users/active?minAge=18&maxAge=30
-# Активный = не удалён, заполнено about, больше двух неудалённых аватаров.
-# В ответе id, login, avatars_count и latest_avatar (имя самого свежего аватара).
-# По умолчанию minAge = 1, maxAge = 150, границы включительно (BETWEEN).
-#
-# Роут 'active' объявлен в контроллере раньше ':id'. Если порядок поменять,
-# /users/active уйдёт в findOne и вернёт 400 «id не целое число».
-###############################################################################
+# ═════════════════════════════════════════════════════════════════════════════
+# МЯГКО УДАЛЁННЫЙ ПОЛЬЗОВАТЕЛЬ
+# ═════════════════════════════════════════════════════════════════════════════
 
-### Активные без токена — ожидаем 401
-GET {{baseUrl}}/users/active
+### Пользователь C удаляет себя — 204
+DELETE {{baseUrl}}/profile/my
+Authorization: Bearer {{users_c_access}}
 
 > {%
-    client.test("активные закрыты для неавторизованных", function () {
-        client.assert(response.status === 401,
-            "ожидали 401, пришло " + response.status);
-    });
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
 %}
 
 
-### Активные без параметров — диапазон по умолчанию 1..150
-GET {{baseUrl}}/users/active
-Authorization: Bearer {{second_access_token}}
+### C больше не находится по id — 404
+GET {{baseUrl}}/users/{{users_c_id}}
+Authorization: Bearer {{users_access}}
 
 > {%
-    client.test("без параметров → 200 и массив", function () {
-        client.assert(response.status === 200,
-            "ожидали 200, пришло " + response.status + " — не перехватил ли запрос роут :id?");
-        client.assert(Array.isArray(response.body), "ожидали массив");
-    });
-    client.test("у каждого больше двух аватаров и есть последний аватар", function () {
-        response.body.forEach(function (user) {
-            // COUNT() в Postgres — bigint, драйвер pg отдаёт его строкой
-            client.assert(Number(user.avatars_count) > 2,
-                "у " + user.login + " avatars_count = " + user.avatars_count);
-            client.assert(!!user.latest_avatar, "у " + user.login + " нет latest_avatar");
-        });
-    });
-    client.test("хеш пароля наружу не уходит", function () {
-        response.body.forEach(function (user) {
-            client.assert(user.passwordHash === undefined, "в ответе есть passwordHash");
-        });
-    });
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status}`));
 %}
 
 
-### Обычный диапазон
-GET {{baseUrl}}/users/active?minAge=18&maxAge=30
-Authorization: Bearer {{second_access_token}}
-
-
-### Только нижняя граница — maxAge берётся по умолчанию
-GET {{baseUrl}}/users/active?minAge=25
-Authorization: Bearer {{second_access_token}}
-
-
-### Только верхняя граница — minAge берётся по умолчанию
-GET {{baseUrl}}/users/active?maxAge=40
-Authorization: Bearer {{second_access_token}}
-
-
-### minAge = maxAge — ровно один возраст, BETWEEN включает обе границы
-GET {{baseUrl}}/users/active?minAge=25&maxAge=25
-Authorization: Bearer {{second_access_token}}
-
-
-### minAge больше maxAge — ожидаем пустой массив, не ошибку
-# Перекрёстной проверки в DTO нет, а BETWEEN 50 AND 20 в Postgres просто
-# ничего не находит (границы не меняются местами сами).
-GET {{baseUrl}}/users/active?minAge=50&maxAge=20
-Authorization: Bearer {{second_access_token}}
+### C пропал из списка — трое
+# URL отличается от первого поиска (добавлен limit), иначе пришёл бы
+# закэшированный ответ, где C ещё есть.
+GET {{baseUrl}}/users?login={{users_prefix}}&limit=10
+Authorization: Bearer {{users_access}}
 
 > {%
-    client.test("minAge > maxAge → пустой массив", function () {
-        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
-        client.assert(response.body.length === 0, "ожидали пустой массив");
+    const logins = response.body.data.map(user => user.login);
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("C в списке нет", () => {
+        client.assert(!logins.includes(`${client.global.get("users_prefix")}_c`), `пришло ${logins}`);
+        client.assert(response.body.meta.total === 3, `total = ${response.body.meta.total}`);
     });
 %}
-
-
-### Верхняя граница maxAge = 150 — ожидаем 200
-GET {{baseUrl}}/users/active?maxAge=150
-Authorization: Bearer {{second_access_token}}
-
-> {%
-    client.test("maxAge = 150 → 200", function () {
-        client.assert(response.status === 200, "ожидали 200, пришло " + response.status);
-    });
-%}
-
-
-### maxAge = 151 — ожидаем 400
-GET {{baseUrl}}/users/active?maxAge=151
-Authorization: Bearer {{second_access_token}}
-
-> {%
-    client.test("maxAge = 151 → 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
-    });
-%}
-
-
-### minAge = 0 — ожидаем 400 (@Min(1))
-GET {{baseUrl}}/users/active?minAge=0
-Authorization: Bearer {{second_access_token}}
-
-> {%
-    client.test("minAge = 0 → 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
-    });
-%}
-
-
-### Отрицательный возраст — ожидаем 400
-GET {{baseUrl}}/users/active?minAge=-5&maxAge=30
-Authorization: Bearer {{second_access_token}}
-
-
-### maxAge = 0 — ожидаем 400
-GET {{baseUrl}}/users/active?maxAge=0
-Authorization: Bearer {{second_access_token}}
-
-
-### Возраст буквами — ожидаем 400
-GET {{baseUrl}}/users/active?minAge=abc
-Authorization: Bearer {{second_access_token}}
-
-> {%
-    client.test("minAge = abc → 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
-    });
-%}
-
-
-### Дробный возраст — ожидаем 400 (@IsInt)
-GET {{baseUrl}}/users/active?minAge=18.5
-Authorization: Bearer {{second_access_token}}
-
-
-### Пустое значение — ожидаем 400
-# ?minAge= приходит пустой строкой, Number('') = 0, дальше срабатывает @Min(1).
-GET {{baseUrl}}/users/active?minAge=
-Authorization: Bearer {{second_access_token}}
-
-
-### minAge больше integer — ожидаем 400, а не 500
-# Та же история, что с /users/2147483648: у minAge нет @Max, число проходит
-# валидацию и уходит в BETWEEN против integer-колонки age.
-GET {{baseUrl}}/users/active?minAge=2147483648
-Authorization: Bearer {{second_access_token}}
-
-> {%
-    client.test("minAge больше integer → 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
-    });
-%}
-
-
-### Неизвестный параметр — ожидаем 400 (его нет в FindActiveUsersDto)
-GET {{baseUrl}}/users/active?minAge=18&page=1
-Authorization: Bearer {{second_access_token}}
-
-> {%
-    client.test("лишний параметр → 400", function () {
-        client.assert(response.status === 400, "ожидали 400, пришло " + response.status);
-    });
-%}
-
-
-### Попытка SQL-инъекции в возрасте — ожидаем 400 от валидации, до базы не доходит
-GET {{baseUrl}}/users/active?minAge=1 OR 1=1
-Authorization: Bearer {{second_access_token}}
