@@ -24,7 +24,7 @@ import { createKeyv } from '@keyv/redis';
       isGlobal: true,
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: async (config: ConfigService) => {
+      useFactory: (config: ConfigService) => {
         return {
           stores: [
             createKeyv(

@@ -11,7 +11,7 @@ import { ConfigService } from '@nestjs/config';
     {
       provide: S3Lib,
       inject: [ConfigService],
-      useFactory: async (config: ConfigService) => {
+      useFactory: (config: ConfigService) => {
         return new AWS.S3({
           endpoint: config.getOrThrow('S3_ENDPOINT'),
           region: 'ru-central1',

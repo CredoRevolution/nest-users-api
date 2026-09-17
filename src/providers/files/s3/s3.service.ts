@@ -44,6 +44,7 @@ export class S3Service extends IFileService {
             });
           } else {
             this.logger.error(`❌ File upload error with path: ${path}`);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument,@typescript-eslint/no-unsafe-member-access
             reject(new UploadException(error.message));
           }
         },
@@ -68,6 +69,7 @@ export class S3Service extends IFileService {
             resolve();
           } else {
             this.logger.error(`❌ File remove error with path: ${path}`);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument,@typescript-eslint/no-unsafe-member-access
             reject(new RemoveException(error.message));
           }
         },
