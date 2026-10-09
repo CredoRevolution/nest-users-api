@@ -68,6 +68,7 @@
 | `06-avatars-delete.http` | Удаление: своя, чужая, кривой id, место в лимите | да |
 | `07-cache.http` | `X-Cache` HIT/MISS, сброс после PATCH и DELETE, что не кэшируется | |
 | `08-balance.http` | Баланс, переводы и откат транзакции четырьмя способами | |
+| `09-balance-reset.http` | Сброс балансов через очередь BullMQ: 202, удалённых не трогает | |
 
 Запуск — кнопка **Run all requests in file** в шапке файла. Результаты во
 вкладке **Tests**.
@@ -76,7 +77,7 @@
 логинами (`auth_<время>`, `usr<время>_a` и так далее), поэтому файлы можно
 запускать в любом порядке и сколько угодно раз. Глобальные переменные у каждого
 файла со своим префиксом (`auth_`, `prof_`, `users_`, `act_`, `upload_`, `del_`,
-`cache_`, `bal_`) и не пересекаются.
+`cache_`, `bal_`, `rst_`) и не пересекаются.
 
 `07-cache.http` проверяет HIT, поэтому запускай его целиком: весь файл должен
 уложиться в 30 секунд TTL. По одному запросу с паузами он начнёт краснеть.
@@ -98,7 +99,7 @@ docker run --rm -v "${PWD}/http:/workdir" jetbrains/intellij-http-client `
   -V baseUrl=http://host.docker.internal:3000 `
   00-smoke.http 01-auth.http 02-profile.http 03-users.http `
   04-users-active.http 05-avatars-upload.http 06-avatars-delete.http `
-  07-cache.http 08-balance.http
+  07-cache.http 08-balance.http 09-balance-reset.http
 ```
 
 ### Транзакции
