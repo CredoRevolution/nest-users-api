@@ -40,7 +40,7 @@ export class BalanceResetService implements OnModuleInit {
 
   async resetAll() {
     const result = await this.balanceResetRepository.resetAll();
-    this.logger.log('resetAll: ' + result + ' users reset');
+    this.logger.log(`Balances reset for ${result} users`);
     return result;
   }
 }

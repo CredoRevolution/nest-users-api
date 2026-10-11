@@ -2,6 +2,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +13,8 @@ const MAX_ACTIVE_AVATARS = 5;
 
 @Injectable()
 class AvatarsService {
+  private readonly logger = new Logger(AvatarsService.name);
+
   constructor(
     private readonly fileService: IFileService,
     private readonly avatarsRepository: AvatarsRepository,
@@ -32,8 +35,24 @@ class AvatarsService {
       name: fileName,
     };
 
-    await this.fileService.uploadFile(payload);
-    return this.avatarsRepository.createUserAvatar(userId, fileName);
+    const { path } = await this.fileService.uploadFile(payload);
+    try {
+      const saved = await this.avatarsRepository.createUserAvatar(
+        userId,
+        fileName,
+      );
+      this.logger.log(
+        `Avatar ${saved.id} uploaded for user ${userId}: ${path}, ${avatar.size} bytes`,
+      );
+      return saved;
+    } catch (err) {
+      // Файл уже в бакете, а записи о нём нет — сирота, которую придётся чистить руками.
+      this.logger.error(
+        `Avatar for user ${userId} uploaded to ${path}, but not saved to DB`,
+        err instanceof Error ? err.stack : String(err),
+      );
+      throw err;
+    }
   }
 
   async deleteAvatar(avatarId: number, userId: number) {
@@ -44,7 +63,9 @@ class AvatarsService {
     if (avatar.userId !== userId) {
       throw new ForbiddenException('You are not allowed to delete this avatar');
     }
-    return this.avatarsRepository.softDeleteAvatar(avatarId);
+    const result = await this.avatarsRepository.softDeleteAvatar(avatarId);
+    this.logger.log(`Avatar ${avatarId} of user ${userId} deleted`);
+    return result;
   }
 }
 

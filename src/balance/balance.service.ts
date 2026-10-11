@@ -1,7 +1,9 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Transactional } from 'typeorm-transactional';
@@ -11,6 +13,8 @@ import { TransferResultDto } from './dto/balance.dto';
 
 @Injectable()
 export class BalanceService {
+  private readonly logger = new Logger(BalanceService.name);
+
   constructor(
     private readonly balanceRepository: BalanceRepository,
     private readonly usersService: UsersService,
@@ -30,6 +34,7 @@ export class BalanceService {
       throw new NotFoundException('User not found');
     }
     await this.usersService.invalidateUserCache(userId);
+    this.logger.log(`Deposit ${amount} to user ${userId}, balance ${balance}`);
     return balance;
   }
 
@@ -39,6 +44,9 @@ export class BalanceService {
       throw new ConflictException('Insufficient funds');
     }
     await this.usersService.invalidateUserCache(userId);
+    this.logger.log(
+      `Withdraw ${amount} from user ${userId}, balance ${balance}`,
+    );
     return balance;
   }
 
@@ -51,7 +59,24 @@ export class BalanceService {
       throw new BadRequestException('Cannot transfer to yourself');
     }
 
-    const balance = await this.runTransfer(fromUserId, toUserId, amount);
+    const route = `${amount} from user ${fromUserId} to user ${toUserId}`;
+    let balance: number;
+    try {
+      balance = await this.runTransfer(fromUserId, toUserId, amount);
+    } catch (err) {
+      // Отказ по вине клиента (нет денег, нет получателя) — warn,
+      // всё остальное — наша поломка, транзакция откатилась.
+      if (err instanceof HttpException) {
+        this.logger.warn(`Transfer ${route} rejected: ${err.message}`);
+      } else {
+        this.logger.error(
+          `Transfer ${route} failed, rolled back`,
+          err instanceof Error ? err.stack : String(err),
+        );
+      }
+      throw err;
+    }
+    this.logger.log(`Transfer ${route} done, sender balance ${balance}`);
 
     // Кэш чистим после коммита: если бы делали это внутри транзакции,
     // откат вернул бы старые данные, а кэш уже был бы сброшен.
