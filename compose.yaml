@@ -12,5 +12,49 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server --console-address ":9001" /data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_storage:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 2s
+      retries: 30
+
+  # Одноразовый: создаёт бакет и ключ доступа приложения из .env и выходит.
+  # Повторный запуск ничего не ломает — уже существующее пропускается.
+  minio-init:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing local/${S3_BUCKET_NAME} &&
+        { mc admin accesskey info local ${MINIO_ACCESS_KEY} >/dev/null 2>&1 ||
+          mc admin accesskey create local minioadmin --access-key ${MINIO_ACCESS_KEY} --secret-key ${MINIO_SECRET_KEY}; }
+  redis:
+    image: redis:alpine3.16
+    container_name: nest-users-redis
+    command: >
+      --requirepass ${REDIS_PASSWORD} --port ${REDIS_PORT}
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
 volumes:
   pgdata:
+  minio_storage:
+  redis_data:

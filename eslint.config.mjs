@@ -7,7 +7,7 @@ import tseslint from 'typescript-eslint';
 export default tseslint.config(
   // ── 1. Что линтер не смотрит вообще ──────────────────────────────────────
   {
-    ignores: ['dist/**', 'coverage/**', 'node_modules/**', '**/*.mjs'],
+    ignores: ['dist/**', 'coverage/**', 'node_modules/**', '**/*.mjs', 'http/**'],
   },
 
   // ── 2. Базовые наборы правил ─────────────────────────────────────────────

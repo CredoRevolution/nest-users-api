@@ -1,0 +1,123 @@
+###############################################################################
+# BALANCE RESET — POST /balance-reset: обнулить баланс всем живым пользователям.
+#
+# Роут ничего не обнуляет сам. Он кладёт задачу reset-all в очередь BullMQ
+# и сразу отвечает 202 Accepted. UPDATE делает BalanceResetProcessor чуть позже,
+# в воркере. Поэтому ответ приходит раньше, чем строки
+# "Processing job N" и "resetAll: X users reseted" в консоли.
+#
+# Мягко удалённых пользователей сброс не трогает: WHERE "deletedAt" IS NULL.
+#
+# Самодостаточный: создаёт двух пользователей. Запуск — сверху вниз.
+###############################################################################
+
+### Живой пользователь с деньгами
+# @name Живой
+< {%
+    request.variables.set("login", "rst_live_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("rst_live_access", response.body.access_token);
+%}
+
+
+### Пополнить живого на 50
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{rst_live_access}}
+Content-Type: application/json
+
+{
+  "amount": 50
+}
+
+> {%
+    client.test("balance = 50", () => client.assert(response.body.balance === 50, `balance = ${response.body.balance}`));
+%}
+
+
+### Пользователь, которого потом удалим
+# @name Удалённый
+< {%
+    request.variables.set("login", "rst_del_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("rst_del_access", response.body.access_token);
+%}
+
+
+### Пополнить удаляемого на 77.77
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{rst_del_access}}
+Content-Type: application/json
+
+{
+  "amount": 77.77
+}
+
+> {%
+    client.test("balance = 77.77", () => client.assert(response.body.balance === 77.77, `balance = ${response.body.balance}`));
+%}
+
+
+### Удалить его — баланс 77.77 должен пережить сброс
+# Проверяется в базе: SELECT id, balance, "deletedAt" FROM users WHERE balance <> 0;
+DELETE {{baseUrl}}/profile/my
+Authorization: Bearer {{rst_del_access}}
+
+> {%
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Сброс
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Без токена — 401
+POST {{baseUrl}}/balance-reset
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Поставить сброс в очередь — 202
+POST {{baseUrl}}/balance-reset
+Authorization: Bearer {{rst_live_access}}
+
+> {%
+    client.test("202 Accepted", () => client.assert(response.status === 202, `пришло ${response.status}`));
+%}
+
+
+### Баланс живого обнулён
+# Задача асинхронная. Если запрос ушёл раньше, чем воркер её отработал,
+# здесь будет 50 — просто запусти запрос ещё раз.
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{rst_live_access}}
+
+> {%
+    client.test("balance = 0", () => client.assert(response.body.balance === 0, `balance = ${response.body.balance}`));
+%}

@@ -1,0 +1,308 @@
+###############################################################################
+# CACHE — CacheInterceptor на GET /users и GET /users/:id, Redis, TTL 30 с.
+#
+# Как понять, попал ли ответ в кэш: CacheInterceptor сам ставит заголовок
+#   X-Cache: MISS — ключа не было, ответ собран и положен в Redis
+#   X-Cache: HIT  — ответ отдан из Redis, контроллер не вызывался
+# Ключ — URL целиком (request.originalUrl), токен в него не входит.
+#
+# Самодостаточный. Запускать целиком и быстро — весь файл укладывается
+# в TTL. Ручная проверка истечения TTL — в playground.http.
+###############################################################################
+
+### Пользователь, чей профиль кэшируем
+# @name Пользователь, чей профиль кэшируем
+< {%
+    const login = "cache_" + Date.now();
+    client.global.set("cache_login", login);
+    request.variables.set("login", login);
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30,
+  "about": "v1"
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("cache_access", response.body.access_token);
+%}
+
+
+### Второй пользователь — проверим, что кэш общий
+# @name Второй пользователь
+< {%
+    request.variables.set("login", "cache2_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("cache_other_access", response.body.access_token);
+%}
+
+
+### id первого
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("/profile/my не кэшируется", () => client.assert(response.headers.valueOf("X-Cache") == null, "есть X-Cache"));
+    client.global.set("cache_id", String(response.body.id));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# GET /users/:id
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Первый запрос — MISS
+GET {{baseUrl}}/users/{{cache_id}}
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("X-Cache: MISS", () => client.assert(response.headers.valueOf("X-Cache") === "MISS", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+    client.test("about = v1", () => client.assert(response.body.about === "v1", `about = ${response.body.about}`));
+%}
+
+
+### Повтор — HIT, тот же ответ
+GET {{baseUrl}}/users/{{cache_id}}
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("X-Cache: HIT", () => client.assert(response.headers.valueOf("X-Cache") === "HIT", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+    client.test("about = v1", () => client.assert(response.body.about === "v1", `about = ${response.body.about}`));
+    client.test("из кэша не утекли служебные поля", () => {
+        for (const field of ["passwordHash", "tokenVersion", "deletedAt"]) {
+            client.assert(!(field in response.body), `в ответе есть ${field}`);
+        }
+    });
+%}
+
+
+### Другой пользователь, тот же URL — HIT, кэш общий
+GET {{baseUrl}}/users/{{cache_id}}
+Authorization: Bearer {{cache_other_access}}
+
+> {%
+    client.test("X-Cache: HIT", () => client.assert(response.headers.valueOf("X-Cache") === "HIT", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+%}
+
+
+### Без токена — 401, гвард срабатывает раньше кэша
+GET {{baseUrl}}/users/{{cache_id}}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+    client.test("из кэша ничего не отдано", () => client.assert(!response.body.login, "в ответе пользователь"));
+%}
+
+
+### Тот же id с лишним query — другой ключ, MISS
+GET {{baseUrl}}/users/{{cache_id}}?v=1
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("X-Cache: MISS", () => client.assert(response.headers.valueOf("X-Cache") === "MISS", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+%}
+
+
+### PATCH профиля — сбрасывает ключ /users/:id
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{cache_access}}
+Content-Type: application/json
+
+{
+  "about": "v2"
+}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+### После PATCH — MISS и свежие данные
+GET {{baseUrl}}/users/{{cache_id}}
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("X-Cache: MISS", () => client.assert(response.headers.valueOf("X-Cache") === "MISS", `X-Cache = ${response.headers.valueOf("X-Cache")} — кэш не сброшен`));
+    client.test("about = v2", () => client.assert(response.body.about === "v2", `about = ${response.body.about}`));
+%}
+
+
+### Ключ с хвостом ?v=1 сброс не задел — HIT со старыми данными
+# invalidateCache удаляет ровно ключ /users/:id, остальные URL живут до TTL.
+GET {{baseUrl}}/users/{{cache_id}}?v=1
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("X-Cache: HIT", () => client.assert(response.headers.valueOf("X-Cache") === "HIT", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+    client.test("about всё ещё v1", () => client.assert(response.body.about === "v1", `about = ${response.body.about}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# GET /users
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Список — MISS
+GET {{baseUrl}}/users?login={{cache_login}}
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("X-Cache: MISS", () => client.assert(response.headers.valueOf("X-Cache") === "MISS", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+    client.test("about = v2", () => client.assert(response.body.data[0].about === "v2", JSON.stringify(response.body.data)));
+%}
+
+
+### Список повторно — HIT
+GET {{baseUrl}}/users?login={{cache_login}}
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("X-Cache: HIT", () => client.assert(response.headers.valueOf("X-Cache") === "HIT", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+%}
+
+
+### PATCH профиля ещё раз
+PATCH {{baseUrl}}/profile/my
+Authorization: Bearer {{cache_access}}
+Content-Type: application/json
+
+{
+  "about": "v3"
+}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+### Список после PATCH — HIT и СТАРЫЙ about
+# Так сейчас устроено: PATCH сбрасывает только /users/:id, а ключей списка
+# много (каждая комбинация page/limit/login), и они живут до конца TTL.
+# Если добавишь сброс списков — этот тест должен начать падать, поменяй его.
+GET {{baseUrl}}/users?login={{cache_login}}
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("X-Cache: HIT", () => client.assert(response.headers.valueOf("X-Cache") === "HIT", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+    client.test("about всё ещё v2", () => client.assert(response.body.data[0].about === "v2", JSON.stringify(response.body.data)));
+%}
+
+
+### Тот же поиск другим URL — MISS и свежий about
+GET {{baseUrl}}/users?login={{cache_login}}&page=1
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("X-Cache: MISS", () => client.assert(response.headers.valueOf("X-Cache") === "MISS", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+    client.test("about = v3", () => client.assert(response.body.data[0].about === "v3", JSON.stringify(response.body.data)));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ЧТО НЕ КЭШИРУЕТСЯ
+# ═════════════════════════════════════════════════════════════════════════════
+
+### 404 — не кэшируется, первый раз MISS
+GET {{baseUrl}}/users/2147483647
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status}`));
+    client.test("X-Cache: MISS", () => client.assert(response.headers.valueOf("X-Cache") === "MISS", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+%}
+
+
+### 404 повторно — снова MISS
+GET {{baseUrl}}/users/2147483647
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status}`));
+    client.test("X-Cache: MISS", () => client.assert(response.headers.valueOf("X-Cache") === "MISS", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+%}
+
+
+### 400 — не доходит до кэша вовсе
+# ValidationPipe срабатывает раньше, чем контроллер отдаёт результат.
+GET {{baseUrl}}/users?page=0
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### /users/active — без CacheInterceptor, заголовка нет
+GET {{baseUrl}}/users/active?minAge=30&maxAge=30
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("нет X-Cache", () => client.assert(response.headers.valueOf("X-Cache") == null, `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# УДАЛЕНИЕ СБРАСЫВАЕТ КЭШ
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Прогреваем /users/:id — HIT или MISS, главное, что ключ есть
+GET {{baseUrl}}/users/{{cache_id}}
+Authorization: Bearer {{cache_other_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+### Пользователь удаляет себя
+DELETE {{baseUrl}}/profile/my
+Authorization: Bearer {{cache_access}}
+
+> {%
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
+%}
+
+
+### Удалённый по id — 404, а не HIT с живым пользователем
+GET {{baseUrl}}/users/{{cache_id}}
+Authorization: Bearer {{cache_other_access}}
+
+> {%
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status} — отдан закэшированный удалённый пользователь`));
+%}
+
+
+### А ключ с хвостом всё ещё отдаёт удалённого — HIT
+# Та же дыра, что со списками: сбрасывается только один ключ.
+GET {{baseUrl}}/users/{{cache_id}}?v=1
+Authorization: Bearer {{cache_other_access}}
+
+> {%
+    client.test("200 OK из кэша", () => {
+        client.assert(response.status === 200 && response.headers.valueOf("X-Cache") === "HIT",
+            `пришло ${response.status}, X-Cache = ${response.headers.valueOf("X-Cache")}`);
+    });
+%}

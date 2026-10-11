@@ -3,9 +3,16 @@ import { AppModule } from './app.module';
 import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { QueryFailedFilter } from './common/filters/query-failed.filter';
+import { initializeTransactionalContext } from 'typeorm-transactional';
+import { getLogLevels } from './config/log-levels';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  initializeTransactionalContext();
+
+  const app = await NestFactory.create(AppModule, {
+    logger: getLogLevels(process.env.NODE_ENV),
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -14,7 +21,10 @@ async function bootstrap() {
       transform: true,
     }),
   );
-  app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
+  app.useGlobalInterceptors(
+    new LoggingInterceptor(),
+    new ClassSerializerInterceptor(app.get(Reflector)),
+  );
   const { httpAdapter } = app.get(HttpAdapterHost);
   app.useGlobalFilters(new QueryFailedFilter(httpAdapter));
 

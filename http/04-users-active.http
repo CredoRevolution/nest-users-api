@@ -1,0 +1,597 @@
+###############################################################################
+# ACTIVE USERS — GET /users/active?minAge=&maxAge=
+#
+# Активный пользователь: не удалён, about не пустой, больше двух
+# неудалённых аватарок. В ответе id, login, avatarsCount, latestAvatar.
+# По умолчанию minAge = 1, maxAge = 150, границы включительно.
+# Роут не кэшируется.
+#
+# Самодостаточный, но грузит аватарки — нужен MinIO и бакет (см. README).
+# Все пользователи файла одного случайного возраста {{act_age}}:
+#   A — about есть, 3 аватарки          → активный
+#   B — about нет, 3 аватарки           → нет
+#   C — about пустая строка, 3 аватарки → нет
+#   D — about есть, 2 аватарки          → нет, пока не загрузит третью
+###############################################################################
+
+### A — регистрация
+# @name A — регистрация
+< {%
+    const prefix = "act" + Date.now();
+    const age = String(40 + Math.floor(Math.random() * 100));
+    client.global.set("act_prefix", prefix);
+    client.global.set("act_age", age);
+    request.variables.set("login", prefix + "_a");
+    request.variables.set("age", age);
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": {{age}},
+  "about": "активный"
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("act_a_access", response.body.access_token);
+%}
+
+
+### A — аватарка 1
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_a_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("act_a_first_avatar_id", String(response.body.id));
+%}
+
+
+### A — аватарка 2
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_a_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### A — аватарка 3, самая свежая
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_a_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/avatar.jpg
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("act_a_latest", response.body.name);
+%}
+
+
+### B — регистрация без about
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{act_prefix}}_b",
+  "email": "{{act_prefix}}_b@example.com",
+  "password": "{{password}}",
+  "age": {{act_age}}
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("act_b_access", response.body.access_token);
+%}
+
+
+### B — аватарка 1
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_b_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### B — аватарка 2
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_b_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### B — аватарка 3
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_b_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### C — регистрация с пустым about
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{act_prefix}}_c",
+  "email": "{{act_prefix}}_c@example.com",
+  "password": "{{password}}",
+  "age": {{act_age}},
+  "about": ""
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("act_c_access", response.body.access_token);
+%}
+
+
+### C — аватарка 1
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_c_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### C — аватарка 2
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_c_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### C — аватарка 3
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_c_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### D — регистрация
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{act_prefix}}_d",
+  "email": "{{act_prefix}}_d@example.com",
+  "password": "{{password}}",
+  "age": {{act_age}},
+  "about": "пока не активный"
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("act_d_access", response.body.access_token);
+%}
+
+
+### D — аватарка 1
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_d_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### D — аватарка 2
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_d_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# КТО АКТИВЕН
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Ровно наш возраст — из наших активен только A
+GET {{baseUrl}}/users/active?minAge={{act_age}}&maxAge={{act_age}}
+Authorization: Bearer {{act_a_access}}
+
+> {%
+    const prefix = client.global.get("act_prefix");
+    const ours = response.body.filter(user => user.login.startsWith(prefix));
+
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("из наших только A", () => {
+        const logins = ours.map(user => user.login);
+        client.assert(JSON.stringify(logins) === JSON.stringify([`${prefix}_a`]), `пришло ${logins}`);
+    });
+    client.test("у A 3 аватарки и последняя — jpg", () => {
+        const a = ours[0];
+        client.assert(a.avatarsCount === 3, `avatarsCount = ${a.avatarsCount}`);
+        client.assert(a.latestAvatar === client.global.get("act_a_latest"), `latestAvatar = ${a.latestAvatar}`);
+    });
+    client.test("в ответе только id, login, avatarsCount, latestAvatar", () => {
+        for (const user of response.body) {
+            for (const field of ["id", "login", "avatarsCount", "latestAvatar"]) {
+                client.assert(field in user, `у ${user.login} нет ${field}`);
+            }
+            for (const field of ["email", "passwordHash", "tokenVersion", "deletedAt"]) {
+                client.assert(!(field in user), `у ${user.login} есть ${field}`);
+            }
+        }
+    });
+    client.test("у всех больше двух аватарок", () => {
+        for (const user of response.body) {
+            client.assert(user.avatarsCount > 2, `у ${user.login} avatarsCount = ${user.avatarsCount}`);
+        }
+    });
+%}
+
+
+### Без параметров (1..150) — A тоже есть
+GET {{baseUrl}}/users/active
+Authorization: Bearer {{act_a_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("A в списке", () => {
+        client.assert(response.body.some(user => user.login === `${client.global.get("act_prefix")}_a`), "A не нашёлся");
+    });
+    client.test("нет X-Cache — роут не кэшируется", () => {
+        client.assert(response.headers.valueOf("X-Cache") == null, `X-Cache = ${response.headers.valueOf("X-Cache")}`);
+    });
+%}
+
+
+### minAge на год больше — A нет
+# @name minAge на год больше
+< {%
+    request.variables.set("age", String(Number(client.global.get("act_age")) + 1));
+%}
+GET {{baseUrl}}/users/active?minAge={{age}}
+Authorization: Bearer {{act_a_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("A нет", () => {
+        client.assert(!response.body.some(user => user.login === `${client.global.get("act_prefix")}_a`), "A в списке");
+    });
+%}
+
+
+### maxAge на год меньше — A нет
+# @name maxAge на год меньше
+< {%
+    request.variables.set("age", String(Number(client.global.get("act_age")) - 1));
+%}
+GET {{baseUrl}}/users/active?maxAge={{age}}
+Authorization: Bearer {{act_a_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("A нет", () => {
+        client.assert(!response.body.some(user => user.login === `${client.global.get("act_prefix")}_a`), "A в списке");
+    });
+%}
+
+
+### minAge больше maxAge — пустой массив, не ошибка
+# Перекрёстной проверки в DTO нет, а BETWEEN 50 AND 20 просто ничего не находит.
+GET {{baseUrl}}/users/active?minAge=50&maxAge=20
+Authorization: Bearer {{act_a_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("пусто", () => client.assert(response.body.length === 0, `пришло ${response.body.length}`));
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Состав меняется вместе с аватарками и профилем
+# ─────────────────────────────────────────────────────────────────────────────
+
+### D загружает третью аватарку
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_d_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### A удаляет одну аватарку — у него остаётся две
+DELETE {{baseUrl}}/profile/my/avatars/{{act_a_first_avatar_id}}
+Authorization: Bearer {{act_a_access}}
+
+> {%
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
+%}
+
+
+### Теперь активен D, а A — нет
+GET {{baseUrl}}/users/active?minAge={{act_age}}&maxAge={{act_age}}
+Authorization: Bearer {{act_a_access}}
+
+> {%
+    const prefix = client.global.get("act_prefix");
+    const logins = response.body.map(user => user.login).filter(login => login.startsWith(prefix));
+
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("из наших только D", () => {
+        client.assert(JSON.stringify(logins) === JSON.stringify([`${prefix}_d`]), `пришло ${logins}`);
+    });
+%}
+
+
+### A загружает новую аватарку — снова три
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{act_a_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("act_a_latest", response.body.name);
+%}
+
+
+### A снова активен, latestAvatar — новая, удалённая в подсчёт не вошла
+GET {{baseUrl}}/users/active?minAge={{act_age}}&maxAge={{act_age}}
+Authorization: Bearer {{act_a_access}}
+
+> {%
+    const a = response.body.find(user => user.login === `${client.global.get("act_prefix")}_a`);
+
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("A в списке", () => client.assert(a, "A не нашёлся"));
+    client.test("avatarsCount = 3, latestAvatar — новая", () => {
+        client.assert(a.avatarsCount === 3, `avatarsCount = ${a.avatarsCount}`);
+        client.assert(a.latestAvatar === client.global.get("act_a_latest"), `latestAvatar = ${a.latestAvatar}`);
+    });
+%}
+
+
+### A удаляет профиль
+DELETE {{baseUrl}}/profile/my
+Authorization: Bearer {{act_a_access}}
+
+> {%
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
+%}
+
+
+### Удалённый A не активен
+GET {{baseUrl}}/users/active?minAge={{act_age}}&maxAge={{act_age}}
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    const prefix = client.global.get("act_prefix");
+    const logins = response.body.map(user => user.login).filter(login => login.startsWith(prefix));
+
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("из наших только D", () => {
+        client.assert(JSON.stringify(logins) === JSON.stringify([`${prefix}_d`]), `пришло ${logins}`);
+    });
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ВАЛИДАЦИЯ
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Без токена — 401
+GET {{baseUrl}}/users/active
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Границы 1 и 150 — 200
+GET {{baseUrl}}/users/active?minAge=1&maxAge=150
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+### maxAge = 151 — 400
+GET {{baseUrl}}/users/active?maxAge=151
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### minAge = 0 — 400
+GET {{baseUrl}}/users/active?minAge=0
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### maxAge = 0 — 400
+GET {{baseUrl}}/users/active?maxAge=0
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Отрицательный возраст — 400
+GET {{baseUrl}}/users/active?minAge=-5
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Возраст буквами — 400
+GET {{baseUrl}}/users/active?minAge=abc
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Дробный возраст — 400
+GET {{baseUrl}}/users/active?minAge=18.5
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Пустое значение — 400
+# ?minAge= приходит пустой строкой, Number('') = 0, срабатывает @Min(1).
+GET {{baseUrl}}/users/active?minAge=
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Больше integer — 400 (@Max(150) отсекает раньше базы)
+GET {{baseUrl}}/users/active?minAge=2147483648
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Попытка SQL-инъекции — 400 от валидации, до базы не доходит
+# Значение: 1 OR 1=1
+GET {{baseUrl}}/users/active?minAge=1%20OR%201%3D1
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Неизвестный параметр — 400
+GET {{baseUrl}}/users/active?minAge=18&page=1
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
