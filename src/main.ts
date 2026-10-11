@@ -4,11 +4,14 @@ import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { QueryFailedFilter } from './common/filters/query-failed.filter';
 import { initializeTransactionalContext } from 'typeorm-transactional';
+import { getLogLevels } from './config/log-levels';
 
 async function bootstrap() {
   initializeTransactionalContext();
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    logger: getLogLevels(process.env.NODE_ENV),
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({
