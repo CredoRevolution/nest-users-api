@@ -8,6 +8,7 @@ import {
   BALANCE_RESET_SCHEDULER_ID,
 } from './balance-reset.constants';
 import { BalanceResetRepository } from './balance-reset.repository';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class BalanceResetService implements OnModuleInit {
@@ -15,6 +16,7 @@ export class BalanceResetService implements OnModuleInit {
     @InjectQueue(BALANCE_RESET_QUEUE)
     private readonly balanceResetQueue: Queue,
     private readonly balanceResetRepository: BalanceResetRepository,
+    private readonly usersService: UsersService,
   ) {}
 
   private readonly logger = new Logger(BalanceResetService.name);
@@ -40,6 +42,7 @@ export class BalanceResetService implements OnModuleInit {
 
   async resetAll() {
     const result = await this.balanceResetRepository.resetAll();
+    await this.usersService.clearUsersCache();
     this.logger.log(`Balances reset for ${result} users`);
     return result;
   }

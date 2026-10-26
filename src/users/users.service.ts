@@ -101,6 +101,10 @@ export class UsersService {
     await this.invalidateCache(`/users/${id}`);
   }
 
+  async clearUsersCache() {
+    await this.cacheManager.clear();
+  }
+
   async softDeleteUser(id: number): Promise<void> {
     await this.findByIdOrFail(id);
     await this.usersRepository.softDeleteUser(id);
