@@ -10,6 +10,13 @@ export class AvatarsRepository {
     private readonly avatarsRepository: Repository<Avatar>,
   ) {}
 
+  async lockUser(userId: number) {
+    await this.avatarsRepository.query(
+      `SELECT id FROM users WHERE id = $1 FOR UPDATE`,
+      [userId],
+    );
+  }
+
   createUserAvatar(userId: number, fileName: string) {
     const result = this.avatarsRepository.create({
       userId,

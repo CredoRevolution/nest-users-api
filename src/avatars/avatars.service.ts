@@ -8,6 +8,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { IFileService } from '../providers/files/files.adapter';
 import { AvatarsRepository } from './avatars.repository';
+import { Transactional } from 'typeorm-transactional';
 
 const MAX_ACTIVE_AVATARS = 5;
 
@@ -20,7 +21,9 @@ class AvatarsService {
     private readonly avatarsRepository: AvatarsRepository,
   ) {}
 
+  @Transactional()
   async uploadAvatar(avatar: Express.Multer.File, userId: number) {
+    await this.avatarsRepository.lockUser(userId);
     const currentUserAvatarsCount =
       await this.avatarsRepository.countUserAvatars(userId);
     if (MAX_ACTIVE_AVATARS <= currentUserAvatarsCount) {
