@@ -333,8 +333,10 @@ Content-Type: image/png
 %}
 
 
-### Две картинки в поле "avatar" — 400
-# FileInterceptor — это multer.single(), второй файл в поле уже лишний.
+### Две картинки в поле "avatar" из PhpStorm — 422
+# PhpStorm склеивает два файла с одним именем поля в одну часть multipart/mixed.
+# Multer видит поле без filename, файла нет → 422 File is required.
+# Настоящие две части (браузер, curl) дают 400 Unexpected field.
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{upload_access}}
 Content-Type: multipart/form-data; boundary=boundary
@@ -352,7 +354,8 @@ Content-Type: image/jpeg
 --boundary--
 
 > {%
-    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+  client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+  client.test("причина — файла нет", () => client.assert(response.body.message === "File is required", `пришло ${response.body.message}`));
 %}
 
 
