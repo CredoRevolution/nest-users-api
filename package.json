@@ -91,8 +91,18 @@
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.(t|j)s$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "allowJs": true
+          }
+        }
+      ]
     },
+    "transformIgnorePatterns": [
+      "node_modules/(?!(@nestjs/cache-manager|cache-manager|keyv|@keyv)/)"
+    ],
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
