@@ -370,14 +370,12 @@ Authorization: Bearer {{act_a_access}}
 %}
 
 
-### minAge больше maxAge — пустой массив, не ошибка
-# Перекрёстной проверки в DTO нет, а BETWEEN 50 AND 20 просто ничего не находит.
+### minAge больше maxAge — ошибка
 GET {{baseUrl}}/users/active?minAge=50&maxAge=20
 Authorization: Bearer {{act_a_access}}
 
 > {%
-    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
-    client.test("пусто", () => client.assert(response.body.length === 0, `пришло ${response.body.length}`));
+    client.test("400 BadRequest", () => client.assert(response.status === 400, `пришло ${response.status}`));
 %}
 
 

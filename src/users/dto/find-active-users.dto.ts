@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsInt, IsOptional, Max, Min, Validate } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { AgeRangeValidator } from './age-range.validator';
 
 export class FindActiveUsersDto {
   @ApiProperty({
@@ -27,5 +28,6 @@ export class FindActiveUsersDto {
   @Max(150, { message: 'maxAge must not be greater than 150' })
   @Type(() => Number)
   @IsOptional()
+  @Validate(AgeRangeValidator)
   maxAge: number = 150;
 }

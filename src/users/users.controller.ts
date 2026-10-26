@@ -53,7 +53,8 @@ export class UsersController {
       'Больше двух неудалённых аватарок, заполненное описание, возраст в переданном диапазоне',
   })
   @ApiBadRequestResponse({
-    description: 'minAge или maxAge не целые числа или вне диапазона 1..150',
+    description:
+      'minAge больше maxAge или minAge/maxAge не целые числа или вне диапазона 1..150',
   })
   @ApiOkResponse({ type: [FindActiveUsersResponseDto] })
   @Get('active')
