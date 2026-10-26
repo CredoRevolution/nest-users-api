@@ -1,0 +1,748 @@
+###############################################################################
+# BALANCE — /profile/my/balance: пополнение, списание, перевод.
+#
+# Баланс хранится в numeric(12, 2): ровно два знака после запятой, никакого
+# float. Наружу отдаётся числом благодаря transformer в сущности.
+#
+# Перевод — это одна транзакция (@Transactional из typeorm-transactional):
+# списание и зачисление либо происходят оба, либо не происходят вовсе.
+# Здесь транзакция рвётся четырьмя способами, и каждый раз проверяется,
+# что деньги не испарились и не удвоились:
+#   получателя нет            → 404, отправитель не потерял ничего
+#   не хватает денег          → 409, получатель ничего не получил
+#   получатель удалён         → 404
+#   код упал между UPDATE     → 500, оба баланса на месте (роут /transfer/crash)
+#
+# Самодостаточный: создаёт трёх пользователей. Запуск — сверху вниз.
+###############################################################################
+
+### A — отправитель
+# @name A — отправитель
+< {%
+    request.variables.set("login", "bal_a_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("bal_a_access", response.body.access_token);
+%}
+
+
+### id пользователя A
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("баланс нового пользователя = 0", () => {
+        client.assert(response.body.balance === 0, `balance = ${response.body.balance}`);
+    });
+    client.test("balance — число, а не строка", () => {
+        client.assert(typeof response.body.balance === "number", `тип ${typeof response.body.balance}`);
+    });
+    client.global.set("bal_a_id", String(response.body.id));
+%}
+
+
+### B — получатель, id больше, чем у A
+# @name B — получатель
+< {%
+    request.variables.set("login", "bal_b_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("bal_b_access", response.body.access_token);
+%}
+
+
+### id пользователя B
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{bal_b_access}}
+
+> {%
+    client.global.set("bal_b_id", String(response.body.id));
+    client.test("id B больше id A", () => {
+        client.assert(response.body.id > Number(client.global.get("bal_a_id")), "порядок id нарушен");
+    });
+%}
+
+
+### C — его удалим, чтобы перевести удалённому
+# @name C — удаляемый
+< {%
+    request.variables.set("login", "bal_c_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("bal_c_access", response.body.access_token);
+%}
+
+
+### id пользователя C
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{bal_c_access}}
+
+> {%
+    client.global.set("bal_c_id", String(response.body.id));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ПОПОЛНЕНИЕ И СПИСАНИЕ
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Свой баланс — 200 и ноль
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("balance = 0", () => client.assert(response.body.balance === 0, `balance = ${response.body.balance}`));
+%}
+
+
+### Пополнить на 0.10
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 0.10
+}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("balance = 0.1", () => client.assert(response.body.balance === 0.1, `balance = ${response.body.balance}`));
+%}
+
+
+### Пополнить ещё на 0.20 — в сумме ровно 0.30
+# Вот ради чего numeric: в double 0.1 + 0.2 = 0.30000000000000004.
+# Складывает база, а не JS, поэтому здесь ровно 0.3.
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 0.20
+}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("balance ровно 0.3", () => client.assert(response.body.balance === 0.3, `balance = ${response.body.balance}`));
+%}
+
+
+### Пополнить на 99.99
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 99.99
+}
+
+> {%
+    client.test("balance = 100.29", () => client.assert(response.body.balance === 100.29, `balance = ${response.body.balance}`));
+%}
+
+
+### Списать 0.29
+POST {{baseUrl}}/profile/my/balance/withdraw
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 0.29
+}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("balance = 100", () => client.assert(response.body.balance === 100, `balance = ${response.body.balance}`));
+%}
+
+
+### Списать больше, чем есть — 409, баланс не тронут
+POST {{baseUrl}}/profile/my/balance/withdraw
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 100.01
+}
+
+> {%
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+    client.test("сообщение про нехватку денег", () => {
+        client.assert(response.body.message === "Insufficient funds", response.body.message);
+    });
+%}
+
+
+### Списать ровно весь остаток можно — граница
+POST {{baseUrl}}/profile/my/balance/withdraw
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 100
+}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("balance = 0", () => client.assert(response.body.balance === 0, `balance = ${response.body.balance}`));
+%}
+
+
+### Вернём 100 на баланс A — дальше он переводит
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 100
+}
+
+> {%
+    client.test("balance = 100", () => client.assert(response.body.balance === 100, `balance = ${response.body.balance}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ПЕРЕВОД — счастливый путь
+# ═════════════════════════════════════════════════════════════════════════════
+
+### A переводит B 10.01 — 200
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "toUserId": {{bal_b_id}},
+  "amount": 10.01
+}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("у отправителя осталось 89.99", () => {
+        client.assert(response.body.balance === 89.99, `balance = ${response.body.balance}`);
+    });
+    client.test("в ответе кому и сколько", () => {
+        client.assert(String(response.body.toUserId) === client.global.get("bal_b_id"), `toUserId = ${response.body.toUserId}`);
+        client.assert(response.body.amount === 10.01, `amount = ${response.body.amount}`);
+    });
+%}
+
+
+### У получателя ровно 10.01 — деньги дошли целиком
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_b_access}}
+
+> {%
+    client.test("balance B = 10.01", () => client.assert(response.body.balance === 10.01, `balance = ${response.body.balance}`));
+%}
+
+
+### Сумма двух балансов = 100, сколько было
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("89.99 + 10.01 = 100", () => {
+        client.assert(response.body.balance === 89.99, `balance A = ${response.body.balance}`);
+    });
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ОБРЫВ ТРАНЗАКЦИИ — деньги не должны ни исчезать, ни удваиваться
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Получателя не существует — 404
+# id отправителя меньше несуществующего, поэтому сначала выполняется списание,
+# и только потом падает зачисление. Без транзакции деньги бы пропали.
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "toUserId": 2147483647,
+  "amount": 5
+}
+
+> {%
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status}`));
+    client.test("сообщение про получателя", () => {
+        client.assert(response.body.message === "Recipient not found", response.body.message);
+    });
+%}
+
+
+### Баланс A не изменился — списание откатилось
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("balance всё ещё 89.99", () => {
+        client.assert(response.body.balance === 89.99, `balance = ${response.body.balance} — списание не откатилось`);
+    });
+%}
+
+
+### C удаляет свой профиль
+DELETE {{baseUrl}}/profile/my
+Authorization: Bearer {{bal_c_access}}
+
+> {%
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
+%}
+
+
+### Перевод удалённому — 404
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "toUserId": {{bal_c_id}},
+  "amount": 5
+}
+
+> {%
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status}`));
+%}
+
+
+### Баланс A по-прежнему 89.99
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("balance всё ещё 89.99", () => {
+        client.assert(response.body.balance === 89.99, `balance = ${response.body.balance}`);
+    });
+%}
+
+
+### B переводит A больше, чем у него есть — 409
+# Здесь порядок обратный: id получателя меньше, поэтому сначала идёт
+# ЗАЧИСЛЕНИЕ, а списание падает следом. Проверяем, что зачисление откатилось.
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_b_access}}
+Content-Type: application/json
+
+{
+  "toUserId": {{bal_a_id}},
+  "amount": 1000
+}
+
+> {%
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+%}
+
+
+### Баланс A не вырос — зачисление откатилось
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("balance всё ещё 89.99", () => {
+        client.assert(response.body.balance === 89.99, `balance = ${response.body.balance} — зачисление не откатилось`);
+    });
+%}
+
+
+### Баланс B тоже не изменился
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_b_access}}
+
+> {%
+    client.test("balance B = 10.01", () => client.assert(response.body.balance === 10.01, `balance = ${response.body.balance}`));
+%}
+
+
+### Код падает между списанием и зачислением — 500
+# Роут /transfer/crash существует только вне production. Он делает списание
+# и бросает исключение, не дойдя до зачисления.
+POST {{baseUrl}}/profile/my/balance/transfer/crash
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "toUserId": {{bal_b_id}},
+  "amount": 5
+}
+
+> {%
+    client.test("500 Internal Server Error", () => client.assert(response.status === 500, `пришло ${response.status}`));
+%}
+
+
+### После падения баланс A на месте — транзакция откатилась целиком
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("balance всё ещё 89.99", () => {
+        client.assert(response.body.balance === 89.99, `balance = ${response.body.balance} — деньги списались и пропали`);
+    });
+%}
+
+
+### И у B ничего не прибавилось
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_b_access}}
+
+> {%
+    client.test("balance B = 10.01", () => client.assert(response.body.balance === 10.01, `balance = ${response.body.balance}`));
+%}
+
+
+### Перевод самому себе — 400
+# Иначе списание и зачисление шли бы по одной строке и её же блокировке.
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "toUserId": {{bal_a_id}},
+  "amount": 1
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+    client.test("сообщение про перевод себе", () => {
+        client.assert(response.body.message === "Cannot transfer to yourself", response.body.message);
+    });
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# КЭШ — баланс не должен залипать в /users/:id
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Прогреваем кэш профиля A
+GET {{baseUrl}}/users/{{bal_a_id}}
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+    client.test("balance = 89.99", () => client.assert(response.body.balance === 89.99, `balance = ${response.body.balance}`));
+%}
+
+
+### Тот же запрос — из кэша
+GET {{baseUrl}}/users/{{bal_a_id}}
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("X-Cache: HIT", () => client.assert(response.headers.valueOf("X-Cache") === "HIT", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+%}
+
+
+### Пополняем на 10
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 10
+}
+
+> {%
+    client.test("balance = 99.99", () => client.assert(response.body.balance === 99.99, `balance = ${response.body.balance}`));
+%}
+
+
+### Кэш сброшен — MISS и свежий баланс
+GET {{baseUrl}}/users/{{bal_a_id}}
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("X-Cache: MISS", () => client.assert(response.headers.valueOf("X-Cache") === "MISS", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+    client.test("balance = 99.99", () => {
+        client.assert(response.body.balance === 99.99, `balance = ${response.body.balance} — кэш не сброшен`);
+    });
+%}
+
+
+### После перевода кэш сброшен у обоих
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "toUserId": {{bal_b_id}},
+  "amount": 9.99
+}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+### У A свежие данные
+GET {{baseUrl}}/users/{{bal_a_id}}
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("X-Cache: MISS", () => client.assert(response.headers.valueOf("X-Cache") === "MISS", `X-Cache = ${response.headers.valueOf("X-Cache")}`));
+    client.test("balance = 90", () => client.assert(response.body.balance === 90, `balance = ${response.body.balance}`));
+%}
+
+
+### И у B тоже
+GET {{baseUrl}}/users/{{bal_b_id}}
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("balance = 20", () => client.assert(response.body.balance === 20, `balance = ${response.body.balance}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ВАЛИДАЦИЯ И ДОСТУП
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Сумма 0 — 400
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 0
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Отрицательная сумма — 400
+# Иначе пополнение на -100 работало бы как списание в обход проверки остатка.
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": -100
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Три знака после запятой — 400
+# База бы молча округлила 10.005 до 10.01, и копейка взялась бы из воздуха.
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 10.005
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+    client.test("сообщение про два знака", () => {
+        client.assert(response.body.message.includes("amount must have at most 2 decimal places"), response.body.message);
+    });
+%}
+
+
+### Сумма строкой — 400
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": "100"
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Сумма больше лимита операции — 400
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 1000001
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Без суммы — 400
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Лишнее поле — 400
+POST {{baseUrl}}/profile/my/balance/deposit
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 10,
+  "userId": 1
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Перевод без получателя — 400
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "amount": 10
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### toUserId = 0 — 400
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "toUserId": 0,
+  "amount": 10
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### toUserId больше integer — 400, а не 500
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "toUserId": 2147483648,
+  "amount": 10
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### toUserId строкой — 400
+POST {{baseUrl}}/profile/my/balance/transfer
+Authorization: Bearer {{bal_a_access}}
+Content-Type: application/json
+
+{
+  "toUserId": "abc",
+  "amount": 10
+}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Баланс без токена — 401
+GET {{baseUrl}}/profile/my/balance
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Пополнение без токена — 401
+POST {{baseUrl}}/profile/my/balance/deposit
+Content-Type: application/json
+
+{
+  "amount": 1000000
+}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Перевод без токена — 401
+POST {{baseUrl}}/profile/my/balance/transfer
+Content-Type: application/json
+
+{
+  "toUserId": {{bal_b_id}},
+  "amount": 10
+}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Итог: у A и B суммарно ровно 110, сколько и вносили
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_a_access}}
+
+> {%
+    client.test("balance A = 90", () => client.assert(response.body.balance === 90, `balance = ${response.body.balance}`));
+%}
+
+
+### Баланс B
+GET {{baseUrl}}/profile/my/balance
+Authorization: Bearer {{bal_b_access}}
+
+> {%
+    client.test("balance B = 20, в сумме 110", () => {
+        client.assert(response.body.balance === 20, `balance = ${response.body.balance}`);
+    });
+%}

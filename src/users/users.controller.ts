@@ -1,10 +1,11 @@
 import {
+  ClassSerializerInterceptor,
   Controller,
   Get,
   Param,
-  ParseIntPipe,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
@@ -20,6 +21,10 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { FindUsersDto } from './dto/find-users.dto';
 import { PaginatedUsersDto } from './dto/paginated-users.dto';
 import { User } from './entities/user.entity';
+import { IdParamDto } from '../common/dto/id-param.dto';
+import { FindActiveUsersDto } from './dto/find-active-users.dto';
+import { FindActiveUsersResponseDto } from './dto/find-active-users-response.dto';
+import { CacheInterceptor } from '@nestjs/cache-manager';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -32,6 +37,7 @@ export class UsersController {
   constructor(private readonly userService: UsersService) {}
 
   @Get()
+  @UseInterceptors(CacheInterceptor, ClassSerializerInterceptor)
   @ApiOperation({
     summary: 'Список пользователей постранично, с поиском по части логина',
   })
@@ -41,12 +47,32 @@ export class UsersController {
     return this.userService.findAll(query);
   }
 
+  @ApiOperation({
+    summary: 'Активные пользователи',
+    description:
+      'Больше двух неудалённых аватарок, заполненное описание, возраст в переданном диапазоне',
+  })
+  @ApiBadRequestResponse({
+    description:
+      'minAge больше maxAge или minAge/maxAge не целые числа или вне диапазона 1..150',
+  })
+  @ApiOkResponse({ type: [FindActiveUsersResponseDto] })
+  @Get('active')
+  findAllActive(
+    @Query() { minAge, maxAge }: FindActiveUsersDto,
+  ): Promise<FindActiveUsersResponseDto[]> {
+    return this.userService.findActiveUsers(minAge, maxAge);
+  }
+
   @Get(':id')
+  @UseInterceptors(CacheInterceptor, ClassSerializerInterceptor)
   @ApiOperation({ summary: 'Получить пользователя по id' })
   @ApiOkResponse({ type: User })
-  @ApiBadRequestResponse({ description: 'id не является целым числом' })
+  @ApiBadRequestResponse({
+    description: 'id не целое число или вне диапазона 1..2147483647',
+  })
   @ApiNotFoundResponse({ description: 'Пользователь не найден или удалён' })
-  findOne(@Param('id', ParseIntPipe) id: number): Promise<User> {
+  findOne(@Param() { id }: IdParamDto): Promise<User> {
     return this.userService.findByIdOrFail(id);
   }
 }

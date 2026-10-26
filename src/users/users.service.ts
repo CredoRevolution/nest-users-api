@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -10,10 +11,15 @@ import { CreateUserData } from './types/CreateUserData';
 import { FindUsersDto } from './dto/find-users.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { PaginatedUsersDto } from './dto/paginated-users.dto';
+import { FindActiveUsersResponseDto } from './dto/find-active-users-response.dto';
+import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly usersRepository: UsersRepository) {}
+  constructor(
+    private readonly usersRepository: UsersRepository,
+    @Inject(CACHE_MANAGER) private cacheManager: Cache,
+  ) {}
 
   async findAll(query: FindUsersDto): Promise<PaginatedUsersDto> {
     const [data, total] = await this.usersRepository.findAndCount(query);
@@ -82,11 +88,33 @@ export class UsersService {
       data.tokenVersion = user.tokenVersion + 1;
     }
 
-    return this.usersRepository.updateUser(user, data);
+    const response = await this.usersRepository.updateUser(user, data);
+    await this.invalidateCache(`/users/${user.id}`);
+    return response;
+  }
+
+  private async invalidateCache(key: string) {
+    await this.cacheManager.del(key);
+  }
+
+  async invalidateUserCache(id: number): Promise<void> {
+    await this.invalidateCache(`/users/${id}`);
+  }
+
+  async clearUsersCache() {
+    await this.cacheManager.clear();
   }
 
   async softDeleteUser(id: number): Promise<void> {
     await this.findByIdOrFail(id);
     await this.usersRepository.softDeleteUser(id);
+    await this.invalidateCache(`/users/${id}`);
+  }
+
+  async findActiveUsers(
+    minAge: number,
+    maxAge: number,
+  ): Promise<FindActiveUsersResponseDto[]> {
+    return await this.usersRepository.findActiveUsers(minAge, maxAge);
   }
 }

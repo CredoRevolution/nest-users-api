@@ -1,0 +1,363 @@
+###############################################################################
+# AVATARS DELETE — DELETE /profile/my/avatars/:id
+#
+# Удаление мягкое: у записи проставляется deletedAt, файл в бакете остаётся.
+# Удалённая аватарка не занимает место в лимите из 5 штук.
+#
+# Самодостаточный: регистрирует владельца и чужого пользователя и сам
+# загружает то, что удаляет. Нужен MinIO и бакет (см. README).
+# Запуск — сверху вниз.
+###############################################################################
+
+### Владелец
+# @name Владелец
+< {%
+    request.variables.set("login", "del_owner_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("del_access", response.body.access_token);
+    client.global.set("del_refresh", response.body.refresh_token);
+%}
+
+
+### Чужой пользователь
+# @name Чужой пользователь
+< {%
+    request.variables.set("login", "del_other_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("del_other_access", response.body.access_token);
+%}
+
+
+### Чужой загружает свою аватарку
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{del_other_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("del_foreign_id", String(response.body.id));
+%}
+
+
+### Владелец загружает свою аватарку
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{del_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("del_own_id", String(response.body.id));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# АВТОРИЗАЦИЯ — 401
+# Бьём в существующую аватарку владельца. Ниже её удаление проходит с 204,
+# значит, эти запросы её не тронули.
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Без токена — 401
+DELETE {{baseUrl}}/profile/my/avatars/{{del_own_id}}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Refresh-токен вместо access — 401
+DELETE {{baseUrl}}/profile/my/avatars/{{del_own_id}}
+Authorization: Bearer {{del_refresh}}
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Мусор вместо токена — 401
+DELETE {{baseUrl}}/profile/my/avatars/{{del_own_id}}
+Authorization: Bearer это-не-токен
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ЧУЖАЯ АВАТАРКА — 403
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Владелец удаляет аватарку чужого — 403
+# 403 говорит «аватарка есть, но не твоя», и по нему можно перебором узнать
+# занятые id. Альтернатива — отвечать 404. id здесь SERIAL и угадываются
+# и так, поэтому 403 защитим, но на ревью могут спросить.
+DELETE {{baseUrl}}/profile/my/avatars/{{del_foreign_id}}
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("403 Forbidden", () => client.assert(response.status === 403, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# СЧАСТЛИВЫЙ ПУТЬ — 204
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Владелец удаляет свою — 204 без тела
+DELETE {{baseUrl}}/profile/my/avatars/{{del_own_id}}
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
+    client.test("тело пустое", () => client.assert(!response.body, `пришло ${response.body}`));
+%}
+
+
+### Та же аватарка ещё раз — 404
+# Мягко удалённую запись findOneBy уже не видит.
+DELETE {{baseUrl}}/profile/my/avatars/{{del_own_id}}
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status}`));
+%}
+
+
+### Чужой удаляет свою — 204
+# Заодно доказывает, что попытка владельца с 403 её не удалила.
+DELETE {{baseUrl}}/profile/my/avatars/{{del_foreign_id}}
+Authorization: Bearer {{del_other_access}}
+
+> {%
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# КРИВОЙ ID — 400 от IdParamDto, до базы не доходит
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Не число — 400
+DELETE {{baseUrl}}/profile/my/avatars/abc
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Дробное — 400
+DELETE {{baseUrl}}/profile/my/avatars/1.5
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Ноль — 400
+DELETE {{baseUrl}}/profile/my/avatars/0
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Отрицательное — 400
+DELETE {{baseUrl}}/profile/my/avatars/-1
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Максимальный integer — валидный id, но аватарки нет — 404
+DELETE {{baseUrl}}/profile/my/avatars/2147483647
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("404 Not Found", () => client.assert(response.status === 404, `пришло ${response.status}`));
+%}
+
+
+### Больше integer — 400, а не 500
+DELETE {{baseUrl}}/profile/my/avatars/2147483648
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ЛИМИТ — удалённая аватарка место не занимает
+# Сейчас у владельца 0 активных и 1 удалённая. Если все пять загрузок
+# проходят, удалённая в лимит не считается.
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Слот 1 из 5
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{del_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### Слот 2 из 5
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{del_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### Слот 3 из 5
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{del_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### Слот 4 из 5
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{del_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### Слот 5 из 5 — проходит, удалённая место не заняла
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{del_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("del_last_id", String(response.body.id));
+%}
+
+
+### Шестая — 409
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{del_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+%}
+
+
+### Удаляем одну — 204
+DELETE {{baseUrl}}/profile/my/avatars/{{del_last_id}}
+Authorization: Bearer {{del_access}}
+
+> {%
+    client.test("204 No Content", () => client.assert(response.status === 204, `пришло ${response.status}`));
+%}
+
+
+### Снова шестая — место освободилось, 201
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{del_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}

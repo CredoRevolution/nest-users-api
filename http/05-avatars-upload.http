@@ -1,0 +1,469 @@
+###############################################################################
+# AVATARS UPLOAD — POST /profile/my/avatars
+#
+# Одна картинка (png или jpeg) в поле "avatar", до 10 МБ. Файл уходит
+# в MinIO, в таблицу avatars пишется { id, name, userId, createdAt }.
+# Тип определяется по содержимому (magic numbers), а не по расширению
+# и не по Content-Type части — их клиент пишет какие хочет.
+#
+# Кто каким кодом отвечает:
+#   JwtAuthGuard                       → 401
+#   FileInterceptor (Multer)           → 400 чужое поле или два файла,
+#                                        413 больше лимита
+#   ParseFilePipe                      → 422 нет файла или не тот тип
+#   AvatarsService                     → 409 уже 5 аватарок
+#
+# Самодостаточный. Нужен MinIO и бакет (см. README). Запуск — сверху вниз.
+# Картинки лежат в http/fixtures, пути считаются от этого файла.
+###############################################################################
+
+### Одноразовый пользователь
+# @name Одноразовый пользователь
+< {%
+    request.variables.set("login", "upload_" + Date.now());
+%}
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "login": "{{login}}",
+  "email": "{{login}}@example.com",
+  "password": "{{password}}",
+  "age": 30
+}
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.global.set("upload_access", response.body.access_token);
+    client.global.set("upload_refresh", response.body.refresh_token);
+%}
+
+
+### Его id — сверим с userId в ответах
+GET {{baseUrl}}/profile/my
+Authorization: Bearer {{upload_access}}
+
+> {%
+    client.global.set("upload_user_id", String(response.body.id));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# СЧАСТЛИВЫЙ ПУТЬ — 201
+# ═════════════════════════════════════════════════════════════════════════════
+
+### PNG — 201
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    const body = response.body;
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.test("в ответе запись об аватарке", () => {
+        client.assert(Number.isInteger(body.id), `id = ${body.id}`);
+        client.assert(body.name, "нет name");
+        client.assert(body.createdAt, "нет createdAt");
+    });
+    client.test("привязана к текущему пользователю", () => {
+        client.assert(String(body.userId) === client.global.get("upload_user_id"), `userId = ${body.userId}`);
+    });
+    client.test("имя — <uuid>.png", () => {
+        client.assert(/^[0-9a-f-]{36}\.png$/.test(body.name), `name = ${body.name}`);
+    });
+    client.test("deletedAt наружу не уходит", () => client.assert(!("deletedAt" in body), "в ответе есть deletedAt"));
+
+    client.global.set("upload_first_id", String(body.id));
+    client.global.set("upload_first_name", body.name);
+%}
+
+
+### JPEG — 201, расширение берётся из mime-типа: .jpeg
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/avatar.jpg
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.test("имя — <uuid>.jpeg", () => {
+        client.assert(/^[0-9a-f-]{36}\.jpeg$/.test(response.body.name), `name = ${response.body.name}`);
+    });
+%}
+
+
+### Та же картинка ещё раз — новая запись с новым именем
+# Старая не затирается ни в таблице, ни в бакете.
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.test("новые id и имя", () => {
+        client.assert(String(response.body.id) !== client.global.get("upload_first_id"), "id совпал с первой загрузкой");
+        client.assert(response.body.name !== client.global.get("upload_first_name"), "имя совпало — файл в бакете затёрт");
+    });
+%}
+
+
+### Расширение и Content-Type врут, внутри PNG — 201 и сохранён как .png
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="photo.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+    client.test("сохранён по реальному типу", () => {
+        client.assert(/\.png$/.test(response.body.name), `name = ${response.body.name}`);
+    });
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# АВТОРИЗАЦИЯ — 401
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Без токена — 401
+POST {{baseUrl}}/profile/my/avatars
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Refresh-токен вместо access — 401
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_refresh}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+### Мусор вместо токена — 401
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer это-не-токен
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("401 Unauthorized", () => client.assert(response.status === 401, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# НЕ ТОТ ТИП — 422
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Текстовый файл — 422
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="hello.txt"
+Content-Type: text/plain
+
+Привет, это не картинка.
+--boundary--
+
+> {%
+    client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+%}
+
+
+### Текст под видом PNG (имя .png, Content-Type image/png) — 422
+# Главный тест: 201 здесь значило бы, что тип берётся со слов клиента.
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="fake.png"
+Content-Type: image/png
+
+< ./fixtures/fake.png
+--boundary--
+
+> {%
+    client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+%}
+
+
+### GIF — картинка, но формат не разрешён — 422
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="animation.gif"
+Content-Type: image/gif
+
+< ./fixtures/animation.gif
+--boundary--
+
+> {%
+    client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+%}
+
+
+### WEBP — картинка, но формат не разрешён — 422
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.webp"
+Content-Type: image/webp
+
+< ./fixtures/avatar.webp
+--boundary--
+
+> {%
+    client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+%}
+
+
+### SVG — 422
+# SVG — это XML, внутри может быть <script>. Раздавать такое из бакета
+# с public-read — готовый XSS.
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.svg"
+Content-Type: image/svg+xml
+
+<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><script>alert(1)</script></svg>
+--boundary--
+
+> {%
+    client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+%}
+
+
+### Пустой файл с именем .png — 422
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="empty.png"
+Content-Type: image/png
+
+--boundary--
+
+> {%
+    client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# КРИВОЙ ЗАПРОС — до S3 дело не доходит
+# Multer срабатывает раньше pipe-а, и errorHttpStatusCode на него не влияет:
+# свои ошибки он маппит сам (transformException в
+# node_modules/@nestjs/platform-express/multer/multer/multer.utils.js).
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Картинка в поле "file" вместо "avatar" — 400 (Unexpected field)
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+### Две картинки в поле "avatar" — отказ, второй файл не проскочил
+# Что гарантируем: сервер не принимает второй файл молча, а отказывает с ошибкой
+# клиента. Точный статус зависит от того, как клиент собирает multipart:
+# - PhpStorm склеивает два файла с одним именем поля в одну часть multipart/mixed.
+#   Multer видит поле без filename, файла нет → 422 File is required.
+# - CLI-клиент, браузер и curl шлют две настоящие части. Multer пускает только
+#   один файл, на втором → 400 Unexpected field - avatar.
+# Оба ответа правильные, поэтому тест принимает любой из них, но не 2xx.
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="first.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="second.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/avatar.jpg
+--boundary--
+
+> {%
+  const expected = { 400: "Unexpected field - avatar", 422: "File is required" };
+  client.test("отказ: 400 или 422", () => client.assert(response.status in expected, `пришло ${response.status}`));
+  client.test("причина совпадает со статусом", () => client.assert(response.body.message === expected[response.status], `пришло ${response.status} ${response.body.message}`));
+%}
+
+
+### Multipart без файла, только текстовое поле — 422
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="description"
+
+файла нет
+--boundary--
+
+> {%
+    client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+%}
+
+
+### JSON вместо multipart — 422
+# Multer пропускает не-multipart запросы мимо себя, файл просто не появляется.
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: application/json
+
+{
+  "avatar": "это строка, а не файл"
+}
+
+> {%
+    client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+%}
+
+
+### Совсем пустой запрос — 422
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+
+> {%
+    client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ЛИМИТ РАЗМЕРА — 413
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Файл 11 МБ — 413
+# Лимит стоит в Multer, поэтому большой файл обрывается ещё на приёме.
+# Фикстуры нет в git — один раз создай её в Git Bash:
+#   head -c 11M /dev/urandom > http/fixtures/big.jpg
+# Без неё этот запрос упадёт с ошибкой чтения файла.
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="big.jpg"
+Content-Type: image/jpeg
+
+< ./fixtures/big.jpg
+--boundary--
+
+> {%
+    client.test("413 Payload Too Large", () => client.assert(response.status === 413, `пришло ${response.status}`));
+%}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ИТОГ — ни одна неудачная загрузка не создала запись
+# ═════════════════════════════════════════════════════════════════════════════
+
+### Пятая загрузка проходит — 201
+# Удачных выше было четыре. Если бы хоть одна неудачная создала запись,
+# лимит в 5 был бы уже исчерпан.
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("201 Created", () => client.assert(response.status === 201, `пришло ${response.status}`));
+%}
+
+
+### Шестая — 409
+POST {{baseUrl}}/profile/my/avatars
+Authorization: Bearer {{upload_access}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="avatar"; filename="avatar.png"
+Content-Type: image/png
+
+< ./fixtures/avatar.png
+--boundary--
+
+> {%
+    client.test("409 Conflict", () => client.assert(response.status === 409, `пришло ${response.status}`));
+%}

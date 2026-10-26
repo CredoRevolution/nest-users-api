@@ -4,6 +4,7 @@ import * as bcrypt from 'bcrypt';
 import { UsersService } from './users.service';
 import { UsersRepository } from './users.repository';
 import { User } from './entities/user.entity';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -33,10 +34,17 @@ describe('UsersService', () => {
       softDeleteUser: jest.fn(),
     };
 
+    const cache = {
+      get: jest.fn(),
+      del: jest.fn(),
+      clear: jest.fn(),
+    };
+
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: UsersRepository, useValue: repository },
+        { provide: CACHE_MANAGER, useValue: cache },
       ],
     }).compile();
 
