@@ -333,10 +333,14 @@ Content-Type: image/png
 %}
 
 
-### Две картинки в поле "avatar" из PhpStorm — 422
-# PhpStorm склеивает два файла с одним именем поля в одну часть multipart/mixed.
-# Multer видит поле без filename, файла нет → 422 File is required.
-# Настоящие две части (браузер, curl) дают 400 Unexpected field.
+### Две картинки в поле "avatar" — отказ, второй файл не проскочил
+# Что гарантируем: сервер не принимает второй файл молча, а отказывает с ошибкой
+# клиента. Точный статус зависит от того, как клиент собирает multipart:
+# - PhpStorm склеивает два файла с одним именем поля в одну часть multipart/mixed.
+#   Multer видит поле без filename, файла нет → 422 File is required.
+# - CLI-клиент, браузер и curl шлют две настоящие части. Multer пускает только
+#   один файл, на втором → 400 Unexpected field - avatar.
+# Оба ответа правильные, поэтому тест принимает любой из них, но не 2xx.
 POST {{baseUrl}}/profile/my/avatars
 Authorization: Bearer {{upload_access}}
 Content-Type: multipart/form-data; boundary=boundary
@@ -354,8 +358,9 @@ Content-Type: image/jpeg
 --boundary--
 
 > {%
-  client.test("422 Unprocessable Entity", () => client.assert(response.status === 422, `пришло ${response.status}`));
-  client.test("причина — файла нет", () => client.assert(response.body.message === "File is required", `пришло ${response.body.message}`));
+  const expected = { 400: "Unexpected field - avatar", 422: "File is required" };
+  client.test("отказ: 400 или 422", () => client.assert(response.status in expected, `пришло ${response.status}`));
+  client.test("причина совпадает со статусом", () => client.assert(response.body.message === expected[response.status], `пришло ${response.status} ${response.body.message}`));
 %}
 
 

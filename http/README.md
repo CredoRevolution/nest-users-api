@@ -4,7 +4,7 @@
 
 - **`playground.http`** — ручная работа: жмёшь по одному запросу и смотришь, что пришло.
   Регистрация, вход, профиль, список пользователей, кэш, аватарки, баланс и переводы.
-- **`00`–`08`** — автотесты: запускаешь файл целиком и смотришь, всё ли зелёное.
+- **`00`–`09`** — автотесты: запускаешь файл целиком и смотришь, всё ли зелёное.
 
 ## Быстрый старт
 
@@ -91,12 +91,12 @@ head -c 11M /dev/urandom > http/fixtures/big.jpg
 
 ### Все автотесты из терминала
 
-Через CLI-версию HTTP Client в Docker, приложение запущено на 3000:
+Через CLI-версию HTTP Client в Docker, приложение запущено на 3200 (PORT из .env):
 
 ```powershell
 docker run --rm -v "${PWD}/http:/workdir" jetbrains/intellij-http-client `
   --env-file http-client.env.json --env dev `
-  -V baseUrl=http://host.docker.internal:3000 `
+  -V baseUrl=http://host.docker.internal:3200 `
   00-smoke.http 01-auth.http 02-profile.http 03-users.http `
   04-users-active.http 05-avatars-upload.http 06-avatars-delete.http `
   07-cache.http 08-balance.http 09-balance-reset.http
@@ -128,4 +128,4 @@ docker run --rm -v "${PWD}/http:/workdir" jetbrains/intellij-http-client `
 создай рядом `http-client.private.env.json` — он в `.gitignore` и перекрывает
 значения из основного файла.
 
-Swagger со всеми роутами: http://localhost:3000/docs
+Swagger со всеми роутами: http://localhost:3200/docs
