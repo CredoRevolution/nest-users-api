@@ -27,29 +27,23 @@ export class S3Service extends IFileService {
 
     this.logger.log('📁 Beginning of uploading file to bucket');
 
-    return new Promise((resolve, reject) => {
-      this.S3.putObject(
-        {
-          Bucket: this.configService.getOrThrow('S3_BUCKET_NAME'),
-          Key: path,
-          Body: file.buffer,
-          ACL: 'public-read',
-          ContentType: file.mimetype,
-        },
-        (error) => {
-          if (!error) {
-            this.logger.log('✅ Uploading was successful');
-            resolve({
-              path,
-            });
-          } else {
-            this.logger.error(`❌ File upload error with path: ${path}`);
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument,@typescript-eslint/no-unsafe-member-access
-            reject(new UploadException(error.message));
-          }
-        },
+    try {
+      await this.S3.putObject({
+        Bucket: this.configService.getOrThrow('S3_BUCKET_NAME'),
+        Key: path,
+        Body: file.buffer,
+        ACL: 'public-read',
+        ContentType: file.mimetype,
+      });
+    } catch (error) {
+      this.logger.error(`❌ File upload error with path: ${path}`);
+      throw new UploadException(
+        error instanceof Error ? error.message : undefined,
       );
-    });
+    }
+
+    this.logger.log('✅ Uploading was successful');
+    return { path };
   }
 
   async removeFile(dto: RemoveFilePayloadDto): Promise<void> {
