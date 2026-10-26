@@ -370,15 +370,6 @@ Authorization: Bearer {{act_a_access}}
 %}
 
 
-### minAge больше maxAge — ошибка
-GET {{baseUrl}}/users/active?minAge=50&maxAge=20
-Authorization: Bearer {{act_a_access}}
-
-> {%
-    client.test("400 BadRequest", () => client.assert(response.status === 400, `пришло ${response.status}`));
-%}
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Состав меняется вместе с аватарками и профилем
 # ─────────────────────────────────────────────────────────────────────────────
@@ -527,6 +518,90 @@ Authorization: Bearer {{act_d_access}}
 
 > {%
     client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+%}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Порядок minAge и maxAge — AgeRangeValidator на maxAge
+#
+# Мало проверить «пришло 400»: 400 бывает по десятку причин. Проверяем,
+# что сработало именно наше правило — по тексту в массиве message.
+# minAge = maxAge уже проверен выше («Ровно наш возраст»).
+# ─────────────────────────────────────────────────────────────────────────────
+
+### minAge больше maxAge — 400 с нашим сообщением
+GET {{baseUrl}}/users/active?minAge=50&maxAge=20
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+    client.test("message — массив, как у остальных ошибок валидации", () => {
+        client.assert(Array.isArray(response.body.message), `пришло ${JSON.stringify(response.body.message)}`);
+    });
+    client.test("ровно одна ошибка — про порядок", () => {
+        const expected = ["maxAge must be greater than or equal to minAge"];
+        client.assert(JSON.stringify(response.body.message) === JSON.stringify(expected), `пришло ${JSON.stringify(response.body.message)}`);
+    });
+%}
+
+
+### minAge больше maxAge на единицу — 400
+# Граница: 21 > 20 уже ошибка, а 20 и 20 — ещё нет.
+GET {{baseUrl}}/users/active?minAge=21&maxAge=20
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+    client.test("ошибка про порядок", () => {
+        client.assert(response.body.message.includes("maxAge must be greater than or equal to minAge"), `пришло ${JSON.stringify(response.body.message)}`);
+    });
+%}
+
+
+### Только minAge = 150 — 200
+# maxAge берётся по умолчанию (150), 150 и 150 — нормальная пара.
+GET {{baseUrl}}/users/active?minAge=150
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+### Только maxAge = 1 — 200
+# minAge берётся по умолчанию (1), 1 и 1 — нормальная пара.
+GET {{baseUrl}}/users/active?maxAge=1
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("200 OK", () => client.assert(response.status === 200, `пришло ${response.status}`));
+%}
+
+
+### minAge буквами — 400 без ошибки про порядок
+# minAge = NaN. Про него кричит @IsInt, а AgeRangeValidator молчит:
+# сравнивать с не-числом бессмысленно, и сообщение про maxAge сбило бы с толку.
+GET {{baseUrl}}/users/active?minAge=abc
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+    client.test("ругаются только на minAge", () => {
+        const foreign = response.body.message.filter(message => !message.startsWith("minAge"));
+        client.assert(foreign.length === 0, `лишнее: ${JSON.stringify(foreign)}`);
+    });
+%}
+
+
+### maxAge буквами при нормальном minAge — 400 без ошибки про порядок
+GET {{baseUrl}}/users/active?minAge=50&maxAge=abc
+Authorization: Bearer {{act_d_access}}
+
+> {%
+    client.test("400 Bad Request", () => client.assert(response.status === 400, `пришло ${response.status}`));
+    client.test("нет ошибки про порядок", () => {
+        client.assert(!response.body.message.includes("maxAge must be greater than or equal to minAge"), `пришло ${JSON.stringify(response.body.message)}`);
+    });
 %}
 
 

@@ -10,7 +10,7 @@ import { FindActiveUsersDto } from './find-active-users.dto';
 export class AgeRangeValidator implements ValidatorConstraintInterface {
   validate(maxAge: number, args: ValidationArguments): boolean {
     const { minAge } = args.object as FindActiveUsersDto;
-    if (Number.isInteger(maxAge) || Number.isInteger(minAge)) return true;
+    if (!Number.isInteger(maxAge) || !Number.isInteger(minAge)) return true;
     return maxAge >= minAge;
   }
 
