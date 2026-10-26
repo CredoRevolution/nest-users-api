@@ -36,10 +36,10 @@ export class S3Service extends IFileService {
         ContentType: file.mimetype,
       });
     } catch (error) {
-      this.logger.error(`❌ File upload error with path: ${path}`);
-      throw new UploadException(
-        error instanceof Error ? error.message : undefined,
+      this.logger.error(
+        `❌ File upload error with path: ${path}, message: ${error}`,
       );
+      throw new UploadException();
     }
 
     this.logger.log('✅ Uploading was successful');
@@ -51,23 +51,18 @@ export class S3Service extends IFileService {
 
     this.logger.log('🗑️ Beginning of removing file from bucket');
 
-    return new Promise((resolve, reject) => {
-      this.S3.deleteObject(
-        {
-          Bucket: this.configService.getOrThrow('S3_BUCKET_NAME'),
-          Key: path,
-        },
-        (error) => {
-          if (!error) {
-            this.logger.log('✅ Removing was successful');
-            resolve();
-          } else {
-            this.logger.error(`❌ File remove error with path: ${path}`);
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument,@typescript-eslint/no-unsafe-member-access
-            reject(new RemoveException(error.message));
-          }
-        },
+    try {
+      await this.S3.deleteObject({
+        Bucket: this.configService.getOrThrow('S3_BUCKET_NAME'),
+        Key: path,
+      });
+    } catch (error) {
+      this.logger.error(
+        `❌ File remove error with path: ${path}, message: ${error}`,
       );
-    });
+      throw new RemoveException();
+    }
+
+    this.logger.log('✅ Removing was successful');
   }
 }

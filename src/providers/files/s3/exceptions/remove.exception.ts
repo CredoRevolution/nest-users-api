@@ -1,7 +1,7 @@
-import { BadRequestException } from '@nestjs/common';
+import { ServiceUnavailableException } from '@nestjs/common';
 
-export class RemoveException extends BadRequestException {
-  constructor(message?: string) {
-    super(`${message ?? 'Something went wrong'}`);
+export class RemoveException extends ServiceUnavailableException {
+  constructor() {
+    super('File storage is unavailable');
   }
 }

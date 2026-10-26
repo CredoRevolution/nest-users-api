@@ -1,8 +1,7 @@
-import { BadRequestException } from '@nestjs/common';
+import { ServiceUnavailableException } from '@nestjs/common';
 
-export class UploadException extends BadRequestException {
-  constructor(message?: string) {
-    //eslint-disable-next-line
-    super(`${message || 'Something went wrong'}`);
+export class UploadException extends ServiceUnavailableException {
+  constructor() {
+    super('File storage is unavailable');
   }
 }
