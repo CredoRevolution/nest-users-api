@@ -56,6 +56,25 @@ describe('QueryFailedFilter', () => {
     expect(body).not.toContain('sasha@example.com');
   });
 
+  it('превращает нарушение CHECK в 409', () => {
+    filter.catch(
+      queryFailed({
+        code: '23514',
+      }),
+      host,
+    );
+
+    expect(httpAdapter.reply).toHaveBeenCalledWith(
+      response,
+      {
+        statusCode: HttpStatus.CONFLICT,
+        message: 'Operation violates a database constraint',
+        error: 'Conflict',
+      },
+      HttpStatus.CONFLICT,
+    );
+  });
+
   it('превращает выход числа за диапазон типа в 400 без самого значения', () => {
     filter.catch(
       queryFailed({
