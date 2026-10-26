@@ -13,7 +13,7 @@ import { ApiHideProperty } from '@nestjs/swagger';
 import { Exclude } from 'class-transformer';
 
 @Entity({ name: 'avatars' })
-@Index(['userId', 'createdAt'])
+@Index(['userId', 'createdAt'], { where: '"deletedAt" IS NULL' })
 export class Avatar {
   @PrimaryGeneratedColumn()
   id: number;

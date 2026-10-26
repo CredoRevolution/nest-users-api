@@ -8,6 +8,7 @@ import { Avatar } from '../avatars/entities/avatar.entity';
 import { AddAvatars1789247071474 } from '../migrations/1789247071474-AddAvatars';
 import { AddIndexes1789568690604 } from '../migrations/1789568690604-AddIndexes';
 import { AddUserBalance1789674246352 } from '../migrations/1789674246352-AddUserBalance';
+import { AvatarsPartialIndex1793025202178 } from '../migrations/1793025202178-AvatarsPartialIndex';
 
 /**
  * Сущности и миграции перечислены явно, а не глобом: глоб вида `*.{ts,js}`
@@ -21,6 +22,7 @@ export const migrations = [
   AddAvatars1789247071474,
   AddIndexes1789568690604,
   AddUserBalance1789674246352,
+  AvatarsPartialIndex1793025202178,
 ];
 
 export const databaseConfig = (
